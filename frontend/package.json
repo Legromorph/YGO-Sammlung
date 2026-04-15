@@ -1,0 +1,33 @@
+{
+  "name": "ygo-collection-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.0",
+    "@fontsource/ibm-plex-mono": "^5.1.1",
+    "@fontsource/manrope": "^5.1.0",
+    "@mui/icons-material": "^5.16.14",
+    "@mui/material": "^5.16.14",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "axios": "^1.7.9",
+    "dayjs": "^1.11.13",
+    "next": "14.2.25",
+    "recharts": "^2.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "eslint": "^8.50.0",
+    "eslint-config-next": "14.0.0",
+    "typescript": "^5.2.0"
+  }
+}
