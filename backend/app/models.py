@@ -318,6 +318,7 @@ class SyncJob(TimestampMixin, Base):
     priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
     payload: Mapped[dict | None] = mapped_column(JSON)
     log_excerpt: Mapped[str | None] = mapped_column(Text)
+    log_details: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
