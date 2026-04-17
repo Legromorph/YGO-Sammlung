@@ -10,7 +10,7 @@ from app.config import settings
 from app.database import get_db
 from app.schemas import BulkSetImportPayload, BulkSetImportResponse
 from app.services.inventory import bulk_add_inventory_from_set
-from app.services.sync import queue_price_update_job, serialize_sync_job
+from app.services.sync import queue_price_update_job, queue_sync_job, serialize_sync_job
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,19 @@ async def bulk_add_from_set(
         except Exception as exc:  # pragma: no cover - defensive fallback around broker/db availability
             price_sync_job_error = str(exc)
             logger.exception("Failed to queue post-import price job for purchase batch %s", response.purchase_batch_id)
+        try:
+            if response.imported_card_print_ids:
+                await queue_sync_job(
+                    "image_sync",
+                    payload={
+                        "card_print_ids": response.imported_card_print_ids,
+                        "trigger": "bulk_import",
+                        "reason": f"purchase_batch:{response.purchase_batch_id}",
+                    },
+                    available_at=datetime.utcnow(),
+                )
+        except Exception as exc:  # pragma: no cover - defensive fallback around broker/db availability
+            logger.exception("Failed to queue post-import image sync for purchase batch %s: %s", response.purchase_batch_id, exc)
 
         if not price_sync_job and not price_sync_job_error:
             return response
