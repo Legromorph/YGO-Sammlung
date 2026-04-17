@@ -438,7 +438,6 @@ export default function CardFormDialog({
     setLookupData(null);
     setLookupError(null);
     setYgoprodeckId('');
-    setCardmarketUrl('');
     setLastImportedCardmarketUrl('');
     setForm((current) => {
       const nextExternalIds = { ...(current.external_ids || {}) };
@@ -525,7 +524,10 @@ export default function CardFormDialog({
   const needsDisambiguation = Boolean(lookupData && printOptions.length > 1 && !resolvedPrint);
   const needsSetSelection = Boolean(lookupData && setGroupOptions.length > 1 && !selectedSetGroup);
   const needsVariantSelection = Boolean(lookupData && selectedSetGroup && variantOptions.length > 1 && !resolvedPrint);
-  const showInventoryFields = !lookupData || Boolean(resolvedPrint);
+  const trimmedCardmarketUrl = cardmarketUrl.trim();
+  const canImportCardmarketLink = isCardmarketUrl(trimmedCardmarketUrl) && trimmedCardmarketUrl !== lastImportedCardmarketUrl && !cardmarketLoading;
+  const showManualPrintFields = !lookupData && Boolean(form.name.trim());
+  const showInventoryFields = showManualPrintFields || Boolean(resolvedPrint) || Boolean(lookupData && !printOptions.length);
   const setCodeLanguageError = useMemo(
     () => validateSetCodeLanguage(form.language, form.set_code),
     [form.language, form.set_code],
@@ -741,25 +743,6 @@ export default function CardFormDialog({
   }, [debouncedSearchTerm, open, searchLanguageQuery, selectedSuggestion]);
 
   useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    const trimmedUrl = cardmarketUrl.trim();
-    if (!isCardmarketUrl(trimmedUrl) || trimmedUrl === lastImportedCardmarketUrl) {
-      return;
-    }
-
-    const handle = window.setTimeout(() => {
-      void loadCardmarketLink(trimmedUrl);
-    }, 300);
-
-    return () => {
-      window.clearTimeout(handle);
-    };
-  }, [cardmarketUrl, lastImportedCardmarketUrl, open]);
-
-  useEffect(() => {
     if (!open || !lookupData || !resolvedPrint) {
       return;
     }
@@ -892,7 +875,7 @@ export default function CardFormDialog({
             <Alert severity="warning">
               {needsSetSelection
                 ? 'Karte erkannt. Bitte jetzt zuerst das richtige Set waehlen.'
-                : 'Das Set ist erkannt. Bitte jetzt noch die richtige Variante waehlen, bevor Sprache und Bestand gespeichert werden.'}
+                : 'Das Set ist erkannt. Bitte jetzt noch die passende Raritaet bzw. Variante waehlen, bevor die restlichen Felder freigeschaltet werden.'}
             </Alert>
           ) : null}
 
@@ -913,20 +896,30 @@ export default function CardFormDialog({
 
           <Grid container spacing={2} sx={{ mt: 0.1 }}>
             <Grid item xs={12}>
-              <TextField
-                label="Cardmarket-Link"
-                fullWidth
-                value={cardmarketUrl}
-                onChange={(event) => setCardmarketUrl(event.target.value)}
-                helperText={
-                  isCardmarketUrl(cardmarketUrl)
-                    ? 'Cardmarket-Link erkannt. Set, Raritaet, Nummer und Preis werden automatisch eingelesen.'
-                    : 'Fuege optional einen Cardmarket-Link ein, um die Druckvariante direkt vorzubelegen.'
-                }
-                InputProps={{
-                  endAdornment: cardmarketLoading ? <CircularProgress color="inherit" size={18} /> : undefined,
-                }}
-              />
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ xs: 'stretch', sm: 'flex-start' }}>
+                <TextField
+                  label="Cardmarket-Link"
+                  fullWidth
+                  value={cardmarketUrl}
+                  onChange={(event) => setCardmarketUrl(event.target.value)}
+                  helperText={
+                    isCardmarketUrl(cardmarketUrl)
+                      ? 'Optionaler Import ueber den exakten Link. Wird nur auf Klick eingelesen, um Cardmarket zu schonen.'
+                      : 'Fuege optional einen Cardmarket-Link ein, wenn du genau diesen Print direkt uebernehmen willst.'
+                  }
+                  InputProps={{
+                    endAdornment: cardmarketLoading ? <CircularProgress color="inherit" size={18} /> : undefined,
+                  }}
+                />
+                <Button
+                  variant="outlined"
+                  sx={{ minWidth: { sm: 148 }, mt: { sm: 0.5 } }}
+                  disabled={!canImportCardmarketLink}
+                  onClick={() => void loadCardmarketLink(trimmedCardmarketUrl)}
+                >
+                  Link einlesen
+                </Button>
+              </Stack>
             </Grid>
 
             <Grid item xs={12}>
@@ -991,7 +984,7 @@ export default function CardFormDialog({
                     helperText={
                       lookupData
                         ? 'Karte erkannt. Jetzt Set und bei Bedarf die genaue Variante waehlen.'
-                        : `Suche immer gleichzeitig in ${searchLanguageLabel || 'DE, EN'}. Danach waehlen wir Set und Variante.`
+                        : `Suche immer gleichzeitig in ${searchLanguageLabel || 'DE, EN'}. Weitere Felder werden erst nach der Kartenauswahl eingeblendet.`
                     }
                     InputProps={{
                       ...params.InputProps,
@@ -1061,14 +1054,14 @@ export default function CardFormDialog({
                   <Grid item xs={12}>
                     <TextField
                       select
-                      label="Variante"
+                      label="Raritaet / Variante"
                       fullWidth
                       color={needsVariantSelection ? 'warning' : 'primary'}
                       value={selectedVariantKey}
                       onChange={(event) => handleVariantChange(event.target.value)}
-                      helperText="Bitte die genaue Variante innerhalb des Sets waehlen."
+                      helperText="Bitte die genaue Raritaet bzw. Variante innerhalb des Sets waehlen."
                     >
-                      <MenuItem value="">Bitte Variante auswaehlen</MenuItem>
+                      <MenuItem value="">Bitte Raritaet / Variante auswaehlen</MenuItem>
                       {variantOptions.map((option) => (
                         <MenuItem key={buildVariantKey(option)} value={buildVariantKey(option)}>
                           {buildVariantLabel(option)}
@@ -1078,7 +1071,7 @@ export default function CardFormDialog({
                   </Grid>
                 ) : null}
               </>
-            ) : (
+            ) : showManualPrintFields ? (
               <>
                 <Grid item xs={12} md={6}>
                   <TextField label="Setname" fullWidth value={form.set_name || ''} onChange={(event) => updateForm({ set_name: event.target.value })} />
@@ -1099,7 +1092,7 @@ export default function CardFormDialog({
                   <TextField label="Seltenheit" fullWidth value={form.rarity || ''} onChange={(event) => updateForm({ rarity: event.target.value })} />
                 </Grid>
               </>
-            )}
+            ) : null}
 
             {showInventoryFields ? (
               <>
@@ -1119,11 +1112,6 @@ export default function CardFormDialog({
                           set_code: buildSetCodeForLanguage(form.set_code, nextLanguage) || form.set_code,
                           cardmarket_expected_language: nextLanguage,
                         });
-                      }
-                      if (isCardmarketUrl(cardmarketUrl)) {
-                        void loadCardmarketLink(cardmarketUrl, nextLanguage);
-                      } else if (lookupData?.ygoprodeck_id) {
-                        void loadLookup({ external_id: lookupData.ygoprodeck_id }, nextLanguage);
                       }
                     }}
                   >
