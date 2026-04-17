@@ -138,7 +138,7 @@ class YgoProDeckPriceProvider:
         cardmarket_mapping: SourceMapping | None = None,
         cardmarket_reference: str | None = None,
     ) -> PriceSnapshot:
-        del condition, cardmarket_mapping, cardmarket_reference
+        del cardmarket_mapping, cardmarket_reference
 
         provider = get_card_data_provider()
         external_id = None
@@ -160,7 +160,17 @@ class YgoProDeckPriceProvider:
                 source_key=f"{self.provider_key}:lookup_failed",
                 match_quality=CARDMARKET_MATCH_FAILED,
                 note="Kein passender YGOPRODeck-Datensatz gefunden.",
-                indicators={"source_market": f"{self.provider_key}:lookup_failed"},
+                indicators={
+                    "source_market": f"{self.provider_key}:lookup_failed",
+                    "provider_lookup_external_id": external_id,
+                    "card_name": card.name,
+                    "set_name": card_print.set_name,
+                    "set_code": card_print.set_code,
+                    "card_number": card_print.card_number,
+                    "rarity": card_print.rarity,
+                    "language": card_print.language,
+                    "condition": condition,
+                },
             )
 
         matched_print = next((entry for entry in (remote_card.get("card_sets") or []) if _match_remote_print(card_print, entry)), None)
@@ -175,7 +185,20 @@ class YgoProDeckPriceProvider:
                 note="Kein verlasslicher print-spezifischer YGOPRODeck-Preis vorhanden.",
                 indicators={
                     "external_id": remote_card.get("external_id"),
+                    "provider_lookup_external_id": external_id,
                     "source_market": f"{self.provider_key}:unpriced",
+                    "matched_print_found": bool(matched_print),
+                    "matched_set_code": matched_print.get("set_code") if matched_print else None,
+                    "matched_card_number": _derive_card_number(matched_print.get("set_code")) if matched_print else None,
+                    "matched_rarity": matched_print.get("set_rarity") if matched_print else None,
+                    "matched_language": _derive_print_language(matched_print.get("set_code")) if matched_print else None,
+                    "card_name": card.name,
+                    "set_name": card_print.set_name,
+                    "set_code": card_print.set_code,
+                    "card_number": card_print.card_number,
+                    "rarity": card_print.rarity,
+                    "language": card_print.language,
+                    "condition": condition,
                 },
             )
 
@@ -255,6 +278,7 @@ class CardmarketPriceProvider:
                     "source": "cardmarket",
                     "source_url": cardmarket_reference,
                     "parse_status": "failed",
+                    "exception_type": type(exc).__name__,
                     "error": str(exc),
                 },
             )
@@ -265,6 +289,7 @@ class CardmarketPriceProvider:
             "source_url": result.source_url,
             "source_product_url": result.product_url,
             "currency": result.currency,
+            "fetch_mode": result.fetch_mode,
             "price_trend": result.price_trend,
             "avg_1d": result.avg_1d,
             "avg_7d": result.avg_7d,
@@ -299,6 +324,11 @@ class CardmarketPriceProvider:
                     "resolved_cardmarket_variant_name": result.resolved_product.variant_name,
                     "resolved_cardmarket_match_quality": result.resolved_product.match_quality,
                     "resolved_cardmarket_verified_at": result.resolved_product.verified_at.isoformat() if result.resolved_product.verified_at else None,
+                    "resolved_cardmarket_reason": result.resolved_product.reason,
+                    "resolved_cardmarket_parse_status": result.resolved_product.parse_status,
+                    "resolved_cardmarket_set_slug_source": result.resolved_product.set_slug_source,
+                    "resolved_cardmarket_rarity": result.resolved_product.rarity,
+                    "resolved_cardmarket_card_number": result.resolved_product.card_number,
                 }
             )
 
