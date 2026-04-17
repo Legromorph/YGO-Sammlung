@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     cardmarket_low_outlier_ratio_vs_next: float = 0.5
     cardmarket_low_outlier_ratio_vs_cluster: float = 0.4
     cardmarket_playwright_timeout_seconds: int = 90
+    cardmarket_trust_verified_product_urls: bool = True
     sync_batch_size: int = 50
 
     price_monitor_night_window_start_hour: int = 1
