@@ -37,14 +37,18 @@ export interface PriceHistoryPoint {
   language?: string | null;
   lowest_offer_price?: number | null;
   selected_market_price?: number | null;
+  market_price_median_top5?: number | null;
   pricing_strategy_used?: string | null;
   offer_count_considered?: number | null;
+  offers_considered_count?: number | null;
   outlier_detected?: boolean | null;
   price_trend?: number | null;
   avg_1d?: number | null;
   avg_7d?: number | null;
   avg_30d?: number | null;
   filters_used?: Record<string, unknown> | null;
+  parse_status?: string | null;
+  top5_offer_prices?: number[];
   raw_offer_prices_sample?: number[];
 }
 
@@ -315,6 +319,14 @@ export interface BulkSetImportPayload {
   items: BulkSetImportLinePayload[];
 }
 
+export interface BulkSetImportAllocationLine {
+  inventory_item_id: number;
+  card_print_id: number;
+  quantity: number;
+  allocated_purchase_price_per_unit?: number | null;
+  allocated_purchase_total: number;
+}
+
 export interface BulkSetImportResponse {
   purchase_batch_id: number;
   created_items: number;
@@ -324,9 +336,12 @@ export interface BulkSetImportResponse {
   imported_inventory_item_ids: number[];
   imported_card_print_ids: number[];
   display_total_price: number;
+  purchase_batch_total_price: number;
   currency: string;
   allocated_unit_price?: number | null;
   total_allocated_price: number;
+  allocation_difference: number;
+  allocation_lines: BulkSetImportAllocationLine[];
   rounding_remainder_cents: number;
   price_sync_job?: SyncJob | null;
   price_sync_job_error?: string | null;
@@ -381,6 +396,7 @@ export interface CardPayload {
   pendulum_scale?: number | null;
   pendulum_effect?: string | null;
   spell_trap_type?: string | null;
+  increment_existing_quantity_on_duplicate?: boolean;
 }
 
 export interface DeckCardPayload {
