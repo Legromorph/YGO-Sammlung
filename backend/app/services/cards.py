@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
+from app.integrations.cardmarket import CardmarketPrintContext, CardmarketResolvedProduct, get_cardmarket_product_resolver
 from app.integrations.cardmarket_links import (
     CARDMARKET_CATEGORY,
     CARDMARKET_MATCH_AMBIGUOUS,
@@ -18,7 +19,6 @@ from app.integrations.cardmarket_links import (
     CARDMARKET_MATCH_EXACT_VARIANT,
     CARDMARKET_MATCH_FAILED,
     CARDMARKET_MATCH_SET_NAME,
-    build_cardmarket_fallback_url,
     build_cardmarket_product_slug,
     build_cardmarket_product_url,
     build_cardmarket_set_slug,
@@ -28,7 +28,7 @@ from app.integrations.cardmarket_links import (
 )
 from app.integrations.card_data import get_card_data_provider
 from app.integrations.cardmarket_public import CardmarketPublicProduct, get_cardmarket_public_client
-from app.models import Card, CardPrint, ImageAsset, InventoryItem, PriceHistory, SourceMapping, StorageLocation, SyncJob
+from app.models import Card, CardPrint, CardSet, ImageAsset, InventoryItem, PriceHistory, SourceMapping, StorageLocation, SyncJob
 from app.schemas import (
     CardDetail,
     CardFilterOptions,
@@ -49,9 +49,244 @@ from app.services.sync import _extract_price_targets, serialize_sync_job
 
 logger = logging.getLogger(__name__)
 
+LANGUAGE_SET_CODE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "de": ("DE",),
+    "en": ("EN",),
+    "fr": ("FR",),
+    "it": ("IT",),
+    "es": ("ES", "SP"),
+    "pt": ("PT",),
+    "jp": ("JP",),
+    "ja": ("JP",),
+    "ko": ("KR",),
+}
+CARDMARKET_SAFE_MATCH_QUALITIES = {
+    CARDMARKET_MATCH_EXACT,
+    CARDMARKET_MATCH_EXACT_VARIANT,
+    CARDMARKET_MATCH_SET_NAME,
+}
+
+
+class DuplicateInventoryItemError(ValueError):
+    def __init__(
+        self,
+        *,
+        existing_item_id: int,
+        existing_quantity: int,
+        increment_by: int,
+        card_name: str,
+        set_code: str | None,
+        language: str,
+        condition: str,
+    ) -> None:
+        self.existing_item_id = existing_item_id
+        self.existing_quantity = existing_quantity
+        self.increment_by = max(1, increment_by)
+        self.card_name = card_name
+        self.set_code = set_code
+        self.language = language
+        self.condition = condition
+        super().__init__("Eine identische Kartenposition existiert bereits.")
+
+    def to_detail(self) -> dict[str, object]:
+        return {
+            "code": "duplicate_card",
+            "message": "Diese Kartenposition existiert bereits. Soll die vorhandene Menge erhoeht werden?",
+            "existing_item_id": self.existing_item_id,
+            "existing_quantity": self.existing_quantity,
+            "increment_by": self.increment_by,
+            "suggested_quantity": self.existing_quantity + self.increment_by,
+            "signature": {
+                "name": self.card_name,
+                "set_code": self.set_code,
+                "language": self.language,
+                "condition": self.condition,
+            },
+        }
+
 
 def normalize_name(value: str) -> str:
     return " ".join(value.lower().split())
+
+
+def _parse_language_preferences(value: str | None, *, default: tuple[str, ...] = ("de", "en")) -> list[str]:
+    raw_parts = [part.strip().lower() for part in (value or "").split(",") if part and part.strip()]
+    normalized_parts: list[str] = []
+    seen: set[str] = set()
+    for part in raw_parts:
+        normalized = _normalize_language_code(part) or part
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_parts.append(normalized)
+    if normalized_parts:
+        return normalized_parts
+    return list(default)
+
+
+def _normalize_language_code(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _extract_set_code_language_prefix(set_code: str | None) -> str | None:
+    normalized_set_code = (set_code or "").strip().upper()
+    if "-" not in normalized_set_code:
+        return None
+    suffix = normalized_set_code.split("-", 1)[1]
+    match = re.match(r"([A-Z]{2,3})", suffix)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _validate_set_code_language(language: str, set_code: str | None) -> None:
+    normalized_language = _normalize_language_code(language)
+    expected_prefixes = LANGUAGE_SET_CODE_PREFIXES.get(normalized_language)
+    if not expected_prefixes:
+        return
+
+    detected_prefix = _extract_set_code_language_prefix(set_code)
+    if not detected_prefix or detected_prefix in expected_prefixes:
+        return
+
+    expected_preview = expected_prefixes[0]
+    raise ValueError(
+        f"Setcode '{set_code}' passt nicht zur Sprache '{normalized_language.upper()}'. "
+        f"Erwartet wird nach dem Bindestrich {', '.join(expected_prefixes)} (z. B. POTD-{expected_preview}011)."
+    )
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _normalize_tags(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    return sorted({value.strip().lower() for value in values if value and value.strip()})
+
+
+def _dedupe_text_values(values: list[str | None]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        normalized = _normalize_optional_text(value)
+        if not normalized:
+            continue
+        key = normalize_name(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped
+
+
+async def _find_matching_card_set(
+    db: AsyncSession,
+    *,
+    set_code: str | None,
+    set_name: str | None,
+) -> CardSet | None:
+    normalized_set_code = _normalize_optional_text(set_code)
+    if normalized_set_code:
+        result = await db.execute(
+            select(CardSet)
+            .where(CardSet.set_code == normalized_set_code)
+            .order_by(CardSet.updated_at.desc())
+        )
+        card_set = result.scalars().first()
+        if card_set:
+            return card_set
+
+    normalized_set_name = normalize_name(set_name) if set_name else ""
+    if normalized_set_name:
+        result = await db.execute(
+            select(CardSet)
+            .where(CardSet.normalized_name == normalized_set_name)
+            .order_by(CardSet.updated_at.desc())
+        )
+        matches = result.scalars().all()
+        if len(matches) == 1:
+            return matches[0]
+
+    return None
+
+
+async def _load_cardmarket_set_slug_hints(
+    db: AsyncSession,
+    *,
+    set_code: str | None,
+    card_set: CardSet | None,
+) -> list[str]:
+    hints: list[str | None] = []
+    if card_set and card_set.cardmarket_set_slug:
+        hints.append(card_set.cardmarket_set_slug)
+
+    normalized_set_code = _normalize_optional_text(set_code)
+    if normalized_set_code:
+        result = await db.execute(
+            select(CardPrint.cardmarket_set_slug)
+            .where(
+                CardPrint.set_code == normalized_set_code,
+                CardPrint.cardmarket_set_slug.is_not(None),
+                CardPrint.cardmarket_match_quality.in_(tuple(CARDMARKET_SAFE_MATCH_QUALITIES)),
+            )
+            .distinct()
+        )
+        hints.extend(result.scalars().all())
+
+    return _dedupe_text_values(hints)
+
+
+def _build_failed_cardmarket_resolution(context: CardmarketPrintContext, reason: str) -> CardmarketResolvedProduct:
+    return CardmarketResolvedProduct(
+        url=None,
+        set_slug=context.existing_set_slug or (context.set_slug_hints[0] if context.set_slug_hints else None),
+        product_slug=context.existing_product_slug or build_cardmarket_product_slug(product_name=context.product_name, variant_name=context.variant_name),
+        product_name=context.product_name,
+        set_name=context.set_name,
+        rarity=context.rarity,
+        card_number=context.card_number,
+        variant_name=context.variant_name,
+        match_quality=CARDMARKET_MATCH_FAILED,
+        verified_at=None,
+        reason=reason,
+        parse_status="failed",
+    )
+
+
+def _update_card_set_cardmarket_metadata(
+    card_set: CardSet | None,
+    *,
+    resolution: CardmarketResolvedProduct,
+    alias_names: list[str],
+) -> None:
+    if not card_set or resolution.match_quality not in CARDMARKET_SAFE_MATCH_QUALITIES or not resolution.set_slug:
+        return
+
+    card_set.cardmarket_set_slug = resolution.set_slug
+    card_set.cardmarket_set_name = resolution.set_name or card_set.cardmarket_set_name or card_set.name
+    card_set.cardmarket_aliases = _dedupe_text_values(
+        [
+            *(card_set.cardmarket_aliases or []),
+            card_set.name,
+            card_set.cardmarket_set_name,
+            resolution.set_name,
+            *alias_names,
+        ]
+    ) or None
+    card_set.cardmarket_slug_match_quality = resolution.match_quality
+    card_set.cardmarket_slug_verified_at = resolution.verified_at or datetime.utcnow()
+    logger.info("Resolved cardmarket set slug '%s' for set '%s'", resolution.set_slug, card_set.name)
+
+
+def _normalize_price_value(value: float | int | Decimal | None) -> Decimal | None:
+    if value is None:
+        return None
+    return Decimal(str(value)).quantize(Decimal("0.0001"))
 
 
 def _first_image(card_print: CardPrint) -> ImageAsset | None:
@@ -84,16 +319,6 @@ def _parse_float(value: str | float | int | None) -> float | None:
 
 def _cardmarket_url(value: str | None) -> str | None:
     return normalize_cardmarket_product_url(value) or (value if value and value.startswith(("http://", "https://")) else None)
-
-
-def _slugify_cardmarket_name(value: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9]+", "-", value.strip())
-    normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
-    return normalized or "Cards"
-
-
-def _fallback_cardmarket_card_url(card_name: str) -> str:
-    return f"https://www.cardmarket.com/en/YuGiOh/Cards/{_slugify_cardmarket_name(card_name)}"
 
 
 def _preferred_cardmarket_locale(language: str | None, fallback_language: str | None) -> str:
@@ -181,6 +406,29 @@ def _card_numbers_match(left: str | None, right: str | None) -> bool:
     return normalized_left == normalized_right or normalized_left.endswith(normalized_right) or normalized_right.endswith(normalized_left)
 
 
+def _set_code_language_neutral_signature(set_code: str | None) -> tuple[str, str] | None:
+    normalized_set_code = (set_code or "").strip().upper()
+    if "-" not in normalized_set_code:
+        return None
+    series, suffix = normalized_set_code.split("-", 1)
+    match = re.match(r"([A-Z]{2,3})([A-Z0-9-]+)$", suffix)
+    if not match:
+        return None
+    return _normalize_lookup_value(series), _normalize_lookup_value(match.group(2))
+
+
+def _set_codes_match_language_neutral(left: str | None, right: str | None) -> bool:
+    normalized_left = _normalize_lookup_value(left)
+    normalized_right = _normalize_lookup_value(right)
+    if not normalized_left or not normalized_right:
+        return False
+    if normalized_left == normalized_right:
+        return True
+    left_signature = _set_code_language_neutral_signature(left)
+    right_signature = _set_code_language_neutral_signature(right)
+    return bool(left_signature and right_signature and left_signature == right_signature)
+
+
 def _is_verified_cardmarket_quality(value: str | None) -> bool:
     return value in {CARDMARKET_MATCH_EXACT, CARDMARKET_MATCH_EXACT_VARIANT}
 
@@ -205,6 +453,52 @@ def _price_note(price_source: str | None, *, multiple_prints: bool, has_cardmark
     if not has_cardmarket_reference:
         note_parts.append("Eine Cardmarket-Referenz konnte nur aus vorhandenen lokalen Mappings uebernommen werden.")
     return " ".join(note_parts)
+
+
+def _is_exact_inventory_duplicate_candidate(
+    item: InventoryItem,
+    *,
+    payload: CardPayload,
+) -> bool:
+    if _normalize_price_value(item.purchase_price) != _normalize_price_value(payload.purchase_price):
+        return False
+    if _normalize_optional_text(item.notes) != _normalize_optional_text(payload.notes):
+        return False
+    if _normalize_tags(item.tags) != _normalize_tags(payload.tags):
+        return False
+    return True
+
+
+async def _find_exact_inventory_duplicate(
+    db: AsyncSession,
+    *,
+    card_print_id: int,
+    payload: CardPayload,
+    exclude_inventory_item_id: int | None = None,
+) -> InventoryItem | None:
+    stmt = (
+        select(InventoryItem)
+        .where(
+            InventoryItem.card_print_id == card_print_id,
+            InventoryItem.condition == payload.condition,
+        )
+        .order_by(InventoryItem.updated_at.desc())
+    )
+    if payload.storage_location_id is None:
+        stmt = stmt.where(InventoryItem.storage_location_id.is_(None))
+    else:
+        stmt = stmt.where(InventoryItem.storage_location_id == payload.storage_location_id)
+    if exclude_inventory_item_id:
+        stmt = stmt.where(InventoryItem.id != exclude_inventory_item_id)
+
+    result = await db.execute(stmt)
+    for candidate in result.scalars().all():
+        if _is_exact_inventory_duplicate_candidate(
+            candidate,
+            payload=payload,
+        ):
+            return candidate
+    return None
 
 
 def _latest_price_entry(item: InventoryItem) -> PriceHistory | None:
@@ -390,13 +684,12 @@ def _resolve_cardmarket_link(item: InventoryItem, mappings: list[SourceMapping],
         cardmarket_variant_name=card_print.cardmarket_variant_name,
         card_name=preferred_product_name,
         has_multiple_variants=False,
-        allow_fallback=True,
+        allow_fallback=False,
     )
-    if derived_resolution.url:
+    if derived_resolution.url and derived_resolution.mode in CARDMARKET_SAFE_MATCH_QUALITIES:
         return derived_resolution.url, derived_resolution.mode
 
-    fallback_url = build_cardmarket_fallback_url(locale, preferred_product_name) or _fallback_cardmarket_card_url(preferred_product_name)
-    return fallback_url, CARDMARKET_MATCH_AMBIGUOUS
+    return None, CARDMARKET_MATCH_FAILED
 
 
 def _build_pricing_status(item: InventoryItem, mappings: list[SourceMapping], active_job: SyncJob | None) -> PricingStatus:
@@ -561,31 +854,57 @@ async def _load_local_cardmarket_references(
 
 async def search_card_catalog(query: str, *, language: str = "de", limit: int = 8, display_currency: str = "EUR") -> list[CardLookupSuggestion]:
     provider = get_card_data_provider()
-    remote_cards = await provider.search_cards(query=query, language=language, limit=limit)
+    search_languages = _parse_language_preferences(language, default=("de", "en"))
     suggestions: list[CardLookupSuggestion] = []
+    seen_external_ids: set[str] = set()
 
-    for card_data in remote_cards:
-        default_market_price, default_price_currency, price_source = _resolve_default_remote_price(card_data)
-        if default_market_price is not None and default_price_currency and default_price_currency.upper() != display_currency.upper():
-            converted_price = await convert_amount(default_market_price, default_price_currency, display_currency)
-            default_market_price = float(converted_price) if converted_price is not None else None
-            default_price_currency = display_currency
-        suggestions.append(
-            CardLookupSuggestion(
-                external_id=card_data.get("external_id", ""),
-                name=card_data.get("name", ""),
-                card_type=card_data.get("card_type"),
-                attribute=card_data.get("attribute"),
-                monster_type=card_data.get("monster_type"),
-                image_url=_remote_image_url(card_data),
-                set_count=len(card_data.get("card_sets") or []),
-                default_market_price=default_market_price,
-                default_price_currency=default_price_currency,
-                price_source=price_source,
+    for search_language in search_languages:
+        remote_cards = await provider.search_cards(query=query, language=search_language, limit=limit)
+        for card_data in remote_cards:
+            external_id = str(card_data.get("external_id", "")).strip()
+            if not external_id or external_id in seen_external_ids:
+                continue
+            seen_external_ids.add(external_id)
+            default_market_price, default_price_currency, price_source = _resolve_default_remote_price(card_data)
+            if default_market_price is not None and default_price_currency and default_price_currency.upper() != display_currency.upper():
+                converted_price = await convert_amount(default_market_price, default_price_currency, display_currency)
+                default_market_price = float(converted_price) if converted_price is not None else None
+                default_price_currency = display_currency
+            suggestions.append(
+                CardLookupSuggestion(
+                    external_id=external_id,
+                    name=card_data.get("name", ""),
+                    card_type=card_data.get("card_type"),
+                    attribute=card_data.get("attribute"),
+                    monster_type=card_data.get("monster_type"),
+                    image_url=_remote_image_url(card_data),
+                    set_count=len(card_data.get("card_sets") or []),
+                    default_market_price=default_market_price,
+                    default_price_currency=default_price_currency,
+                    price_source=price_source,
+                )
             )
-        )
+            if len(suggestions) >= limit:
+                return suggestions[:limit]
 
     return suggestions
+
+
+async def _fetch_remote_card_for_languages(
+    provider,
+    *,
+    name: str | None = None,
+    external_id: str | None = None,
+    language: str | None = None,
+) -> tuple[dict | None, str]:
+    search_languages = _parse_language_preferences(language, default=("de", "en"))
+    for candidate_language in search_languages:
+        remote_card = await provider.fetch_card(name=name, external_id=external_id, language=candidate_language)
+        if remote_card:
+            return remote_card, candidate_language
+
+    remote_card = await provider.fetch_card(name=name, external_id=external_id, language=None)
+    return remote_card, (search_languages[0] if search_languages else "de")
 
 
 async def _lookup_by_name_candidates(
@@ -596,6 +915,7 @@ async def _lookup_by_name_candidates(
 ) -> CardLookupResponse | None:
     tried: set[tuple[str, str | None]] = set()
     provider = get_card_data_provider()
+    lookup_languages = _parse_language_preferences(language, default=("de", "en"))
 
     async def try_lookup(name: str, candidate_language: str | None) -> CardLookupResponse | None:
         key = (name, candidate_language)
@@ -607,9 +927,10 @@ async def _lookup_by_name_candidates(
     for candidate in candidates:
         if not candidate:
             continue
-        direct = await try_lookup(candidate, language)
-        if direct:
-            return direct
+        for lookup_language in lookup_languages:
+            direct = await try_lookup(candidate, lookup_language)
+            if direct:
+                return direct
 
     for candidate in candidates:
         if not candidate:
@@ -621,20 +942,22 @@ async def _lookup_by_name_candidates(
     for candidate in candidates:
         if not candidate:
             continue
-        results = await provider.search_cards(query=candidate, language=language, limit=6)
         normalized_candidate = normalize_name(candidate)
-        best_match = next(
-            (
-                result
-                for result in results
-                if normalize_name(result.get("name") or "") == normalized_candidate or normalized_candidate in normalize_name(result.get("name") or "")
-            ),
-            None,
-        )
-        if best_match and best_match.get("external_id"):
-            lookup = await get_card_lookup(db, external_id=best_match["external_id"], language=language)
-            if lookup:
-                return lookup
+        for lookup_language in lookup_languages:
+            results = await provider.search_cards(query=candidate, language=lookup_language, limit=6)
+            best_match = next(
+                (
+                    result
+                    for result in results
+                    if normalize_name(result.get("name") or "") == normalized_candidate
+                    or normalized_candidate in normalize_name(result.get("name") or "")
+                ),
+                None,
+            )
+            if best_match and best_match.get("external_id"):
+                lookup = await get_card_lookup(db, external_id=best_match["external_id"], language=",".join(lookup_languages))
+                if lookup:
+                    return lookup
 
     return None
 
@@ -711,7 +1034,7 @@ async def get_card_lookup_from_cardmarket_url(
     db: AsyncSession,
     *,
     url: str,
-    language: str = "de",
+    language: str = "de,en",
 ) -> CardLookupResponse:
     app_settings = await get_app_settings(db)
     display_currency = app_settings.preferred_currency
@@ -812,6 +1135,198 @@ async def _resolve_english_cardmarket_naming(
     return product_name, set_names_by_code
 
 
+async def _load_ygoprodeck_external_id(
+    db: AsyncSession,
+    *,
+    card_id: int,
+    card_print_id: int | None,
+    payload_external_ids: dict[str, str],
+) -> str | None:
+    payload_external_id = _normalize_optional_text(payload_external_ids.get("ygoprodeck"))
+    if payload_external_id:
+        return payload_external_id
+
+    target_filters = [
+        and_(SourceMapping.target_type == "card", SourceMapping.target_id == card_id),
+    ]
+    if card_print_id:
+        target_filters.insert(0, and_(SourceMapping.target_type == "card_print", SourceMapping.target_id == card_print_id))
+
+    result = await db.execute(
+        select(SourceMapping)
+        .where(
+            SourceMapping.provider_key == "ygoprodeck",
+            or_(*target_filters),
+        )
+        .order_by(SourceMapping.target_type.desc(), SourceMapping.updated_at.desc())
+    )
+    mapping = result.scalars().first()
+    return _normalize_optional_text(mapping.external_id if mapping else None)
+
+
+def _matches_cardmarket_remote_print(
+    remote_print: dict,
+    *,
+    set_code: str | None,
+    set_name: str | None,
+    card_number: str | None,
+    rarity: str | None,
+) -> bool:
+    normalized_set_code = _normalize_lookup_value(set_code)
+    normalized_set_name = _normalize_lookup_value(set_name)
+    remote_set_code = _normalize_lookup_value(remote_print.get("set_code"))
+    remote_set_name = _normalize_lookup_value(remote_print.get("set_name"))
+
+    if normalized_set_code and remote_set_code and not _set_codes_match_language_neutral(set_code, remote_print.get("set_code")):
+        return False
+    if normalized_set_code and not remote_set_code:
+        return False
+    if not normalized_set_code and normalized_set_name and remote_set_name and normalized_set_name != remote_set_name:
+        return False
+
+    expected_card_number = card_number or _derive_card_number(set_code)
+    remote_card_number = _derive_card_number(remote_print.get("set_code"))
+    if expected_card_number and remote_card_number and not _card_numbers_match(expected_card_number, remote_card_number):
+        return False
+
+    normalized_rarity = _normalize_lookup_value(rarity)
+    remote_rarity = _normalize_lookup_value(remote_print.get("set_rarity"))
+    if normalized_rarity and remote_rarity and normalized_rarity != remote_rarity:
+        return False
+
+    return True
+
+
+def _cardmarket_variant_count_for_remote_card(remote_card: dict, *, set_code: str | None, set_name: str | None) -> int:
+    match_key = _normalize_lookup_value(set_code or set_name)
+    if not match_key:
+        return 1
+
+    count = 0
+    for remote_print in remote_card.get("card_sets") or []:
+        remote_key = _normalize_lookup_value(remote_print.get("set_code") or remote_print.get("set_name"))
+        if remote_key == match_key:
+            count += 1
+    return max(count, 1)
+
+
+async def _resolve_exact_cardmarket_product(
+    db: AsyncSession,
+    *,
+    card: Card,
+    card_print: CardPrint | None,
+    payload: CardPayload,
+    normalized_language: str,
+    matched_card_set: CardSet | None = None,
+) -> CardmarketResolvedProduct:
+    resolver = get_cardmarket_product_resolver()
+    provider = get_card_data_provider()
+
+    preferred_set_name = payload.cardmarket_set_name or (card_print.cardmarket_set_name if card_print else None) or payload.set_name
+    preferred_product_name = payload.cardmarket_product_name or (card_print.cardmarket_product_name if card_print else None) or payload.name
+    preferred_variant_name = payload.cardmarket_variant_name or (card_print.cardmarket_variant_name if card_print else None)
+    variant_count = 2 if preferred_variant_name else 1
+    matched_card_set = matched_card_set or await _find_matching_card_set(db, set_code=payload.set_code, set_name=payload.set_name)
+    set_slug_hints = _dedupe_text_values(
+        [
+            payload.cardmarket_set_slug,
+            card_print.cardmarket_set_slug if card_print else None,
+            matched_card_set.cardmarket_set_slug if matched_card_set else None,
+            *(await _load_cardmarket_set_slug_hints(db, set_code=payload.set_code, card_set=matched_card_set)),
+        ]
+    )
+    alias_names = _dedupe_text_values(
+        [
+            payload.set_name,
+            preferred_set_name,
+            matched_card_set.name if matched_card_set else None,
+            matched_card_set.cardmarket_set_name if matched_card_set else None,
+            *((matched_card_set.cardmarket_aliases or []) if matched_card_set else []),
+        ]
+    )
+
+    remote_card = None
+    try:
+        ygoprodeck_external_id = await _load_ygoprodeck_external_id(
+            db,
+            card_id=card.id,
+            card_print_id=card_print.id if card_print and card_print.id else None,
+            payload_external_ids=payload.external_ids,
+        )
+        remote_card = await provider.fetch_card(
+            external_id=ygoprodeck_external_id,
+            name=None if ygoprodeck_external_id else payload.name,
+            language=normalized_language,
+        )
+    except Exception as exc:
+        logger.exception("Failed to load remote card data during card creation for '%s' (%s): %s", card.name, payload.set_code, exc)
+
+    if remote_card:
+        try:
+            english_product_name, english_set_names_by_code = await _resolve_english_cardmarket_naming(provider, remote_card=remote_card)
+            matched_remote_print = next(
+                (
+                    remote_print
+                    for remote_print in remote_card.get("card_sets") or []
+                    if _matches_cardmarket_remote_print(
+                        remote_print,
+                        set_code=payload.set_code,
+                        set_name=payload.set_name,
+                        card_number=payload.card_number,
+                        rarity=payload.rarity,
+                    )
+                ),
+                None,
+            )
+            preferred_product_name = english_product_name or preferred_product_name
+            preferred_set_name = english_set_names_by_code.get(payload.set_code) or preferred_set_name
+            variant_count = _cardmarket_variant_count_for_remote_card(
+                remote_card,
+                set_code=payload.set_code,
+                set_name=payload.set_name,
+            )
+            if matched_remote_print:
+                alias_names = _dedupe_text_values([*alias_names, matched_remote_print.get("set_name")])
+                if not preferred_set_name:
+                    preferred_set_name = matched_remote_print.get("set_name") or preferred_set_name
+        except Exception as exc:
+            logger.exception("Failed to enrich Cardmarket naming for '%s' (%s): %s", card.name, payload.set_code, exc)
+
+    context = CardmarketPrintContext(
+        product_name=preferred_product_name,
+        set_name=preferred_set_name,
+        set_code=payload.set_code,
+        rarity=payload.cardmarket_expected_rarity or payload.rarity,
+        card_number=payload.card_number or _derive_card_number(payload.set_code),
+        language=payload.cardmarket_expected_language or normalized_language,
+        variant_count=variant_count,
+        variant_name=preferred_variant_name,
+        existing_product_url=payload.cardmarket_product_url or payload.cardmarket_reference or (card_print.cardmarket_product_url if card_print else None),
+        existing_set_slug=payload.cardmarket_set_slug or (card_print.cardmarket_set_slug if card_print else None),
+        existing_product_slug=payload.cardmarket_product_slug or (card_print.cardmarket_product_slug if card_print else None),
+        set_slug_hints=set_slug_hints,
+        set_aliases=alias_names,
+    )
+    try:
+        resolution = await resolver.resolve(context)
+    except Exception as exc:
+        logger.exception("Failed to resolve Cardmarket product during card creation for '%s' (%s): %s", card.name, payload.set_code, exc)
+        return _build_failed_cardmarket_resolution(context, f"resolver error: {exc}")
+
+    _update_card_set_cardmarket_metadata(
+        matched_card_set,
+        resolution=resolution,
+        alias_names=alias_names,
+    )
+    logger.info(
+        "Built Cardmarket URL for card_print %s: %s (%s)",
+        card_print.id if card_print and card_print.id else "new",
+        resolution.url,
+        resolution.match_quality,
+    )
+    return resolution
+
+
 async def get_card_lookup(
     db: AsyncSession,
     *,
@@ -820,10 +1335,17 @@ async def get_card_lookup(
     language: str = "de",
 ) -> CardLookupResponse | None:
     app_settings = await get_app_settings(db)
+    lookup_languages = _parse_language_preferences(language, default=("de", "en"))
+    preferred_lookup_language = lookup_languages[0] if lookup_languages else "de"
     display_currency = app_settings.preferred_currency
-    cardmarket_locale = _preferred_cardmarket_locale(language, app_settings.preferred_search_language)
+    cardmarket_locale = _preferred_cardmarket_locale(preferred_lookup_language, app_settings.preferred_search_language)
     provider = get_card_data_provider()
-    remote_card = await provider.fetch_card(name=name, external_id=external_id, language=language)
+    remote_card, resolved_lookup_language = await _fetch_remote_card_for_languages(
+        provider,
+        name=name,
+        external_id=external_id,
+        language=language,
+    )
     if not remote_card:
         return None
     english_product_name, english_set_names_by_code = await _resolve_english_cardmarket_naming(
@@ -835,7 +1357,7 @@ async def get_card_lookup(
     exact_cardmarket_references = await _load_local_cardmarket_references(
         db,
         normalized_name=normalized_name,
-        language=language,
+        language=resolved_lookup_language,
     )
 
     default_market_price, default_price_currency, default_price_source = _resolve_default_remote_price(remote_card)
@@ -889,19 +1411,19 @@ async def get_card_lookup(
             locale=cardmarket_locale,
             cardmarket_product_url=exact_reference,
             cardmarket_product_slug=None,
-            cardmarket_set_slug=build_cardmarket_set_slug(cardmarket_set_name),
+            cardmarket_set_slug=build_cardmarket_set_slug(cardmarket_set_name, set_code=set_code),
             cardmarket_set_name=cardmarket_set_name,
             cardmarket_product_name=english_product_name or remote_card.get("name"),
             cardmarket_variant_name=None,
             card_name=english_product_name or remote_card.get("name"),
             has_multiple_variants=has_multiple_variants,
-            allow_fallback=True,
+            allow_fallback=False,
         )
 
-        if cardmarket_resolution.mode in {CARDMARKET_MATCH_EXACT, CARDMARKET_MATCH_EXACT_VARIANT, CARDMARKET_MATCH_SET_NAME}:
+        if cardmarket_resolution.mode in CARDMARKET_SAFE_MATCH_QUALITIES:
             cardmarket_reference = cardmarket_resolution.url
         else:
-            cardmarket_reference = cardmarket_resolution.url or exact_reference
+            cardmarket_reference = exact_reference
 
         if market_price is None and cardmarket_resolution.mode in {CARDMARKET_MATCH_AMBIGUOUS, CARDMARKET_MATCH_FAILED}:
             price_source = default_price_source or "ygoprodeck:none"
@@ -913,8 +1435,8 @@ async def get_card_lookup(
                 card_number=print_card_number,
                 rarity=rarity,
                 rarity_code=rarity_code,
-                cardmarket_product_url=cardmarket_resolution.url if cardmarket_resolution.mode in {CARDMARKET_MATCH_EXACT, CARDMARKET_MATCH_EXACT_VARIANT, CARDMARKET_MATCH_SET_NAME} else None,
-                cardmarket_product_slug=cardmarket_resolution.product_slug if cardmarket_resolution.mode in {CARDMARKET_MATCH_EXACT, CARDMARKET_MATCH_EXACT_VARIANT, CARDMARKET_MATCH_SET_NAME} else None,
+                cardmarket_product_url=cardmarket_resolution.url if cardmarket_resolution.mode in CARDMARKET_SAFE_MATCH_QUALITIES else None,
+                cardmarket_product_slug=cardmarket_resolution.product_slug if cardmarket_resolution.mode in CARDMARKET_SAFE_MATCH_QUALITIES else None,
                 cardmarket_set_slug=cardmarket_resolution.set_slug,
                 cardmarket_set_name=cardmarket_set_name,
                 cardmarket_product_name=cardmarket_resolution.product_name or english_product_name or remote_card.get("name"),
@@ -1230,13 +1752,22 @@ async def get_card_detail(db: AsyncSession, inventory_item_id: int) -> CardDetai
         converted_price, conversion_note = await _display_price_value(history.price, history.currency, display_currency)
         payload = history.payload or {}
         lowest_offer_price = await _display_optional_price_value(payload.get("lowest_offer_price"), history.currency, display_currency)
-        selected_market_price = await _display_optional_price_value(payload.get("selected_market_price"), history.currency, display_currency)
+        selected_market_price = await _display_optional_price_value(
+            payload.get("market_price_median_top5") if payload.get("market_price_median_top5") is not None else payload.get("selected_market_price"),
+            history.currency,
+            display_currency,
+        )
         price_trend = await _display_optional_price_value(payload.get("price_trend"), history.currency, display_currency)
         avg_1d = await _display_optional_price_value(payload.get("avg_1d"), history.currency, display_currency)
         avg_7d = await _display_optional_price_value(payload.get("avg_7d"), history.currency, display_currency)
         avg_30d = await _display_optional_price_value(payload.get("avg_30d"), history.currency, display_currency)
+        top5_offer_prices = await _display_price_sample_values(
+            payload.get("top5_offer_prices") if payload.get("top5_offer_prices") is not None else payload.get("raw_offer_prices_sample"),
+            history.currency,
+            display_currency,
+        )
         raw_offer_prices_sample = await _display_price_sample_values(
-            payload.get("raw_offer_prices_sample"),
+            payload.get("raw_offer_prices_sample") if payload.get("raw_offer_prices_sample") is not None else payload.get("top5_offer_prices"),
             history.currency,
             display_currency,
         )
@@ -1257,14 +1788,18 @@ async def get_card_detail(db: AsyncSession, inventory_item_id: int) -> CardDetai
                 language=payload.get("matched_language") or payload.get("language"),
                 lowest_offer_price=lowest_offer_price,
                 selected_market_price=selected_market_price,
+                market_price_median_top5=selected_market_price,
                 pricing_strategy_used=payload.get("pricing_strategy_used"),
-                offer_count_considered=payload.get("offer_count_considered"),
+                offer_count_considered=payload.get("offers_considered_count") or payload.get("offer_count_considered"),
+                offers_considered_count=payload.get("offers_considered_count") or payload.get("offer_count_considered"),
                 outlier_detected=payload.get("outlier_detected"),
                 price_trend=price_trend,
                 avg_1d=avg_1d,
                 avg_7d=avg_7d,
                 avg_30d=avg_30d,
                 filters_used=payload.get("filters_used"),
+                parse_status=payload.get("parse_status"),
+                top5_offer_prices=top5_offer_prices,
                 raw_offer_prices_sample=raw_offer_prices_sample,
             )
         )
@@ -1314,6 +1849,9 @@ async def upsert_card(db: AsyncSession, payload: CardPayload, inventory_item_id:
         if not storage_location:
             raise ValueError("Storage location not found.")
 
+    normalized_language = _normalize_language_code(payload.language) or "de"
+    _validate_set_code_language(normalized_language, payload.set_code)
+
     if payload.card_id:
         card = await db.get(Card, payload.card_id)
     else:
@@ -1351,33 +1889,50 @@ async def upsert_card(db: AsyncSession, payload: CardPayload, inventory_item_id:
             select(CardPrint).where(
                 CardPrint.card_id == card.id,
                 CardPrint.set_code == payload.set_code,
-                CardPrint.language == payload.language,
+                CardPrint.language == normalized_language,
                 CardPrint.card_number == payload.card_number,
                 CardPrint.rarity == payload.rarity,
             )
         )
     if not card_print:
-        card_print = CardPrint(card_id=card.id, language=payload.language)
+        card_print = CardPrint(card_id=card.id, language=normalized_language)
         db.add(card_print)
+
+    matched_card_set = await _find_matching_card_set(db, set_code=payload.set_code, set_name=payload.set_name)
+    if matched_card_set:
+        card_print.set_id = matched_card_set.id
 
     preferred_cardmarket_set_name = payload.cardmarket_set_name or card_print.cardmarket_set_name or payload.set_name
     preferred_cardmarket_product_name = payload.cardmarket_product_name or card_print.cardmarket_product_name or payload.name
     preferred_cardmarket_variant_name = payload.cardmarket_variant_name or card_print.cardmarket_variant_name
-
-    cardmarket_resolution = resolve_cardmarket_product_url(
-        locale=_preferred_cardmarket_locale(payload.language, payload.language),
-        cardmarket_product_url=payload.cardmarket_product_url or payload.cardmarket_reference,
-        cardmarket_product_slug=payload.cardmarket_product_slug,
-        cardmarket_set_slug=payload.cardmarket_set_slug,
-        cardmarket_set_name=preferred_cardmarket_set_name,
-        cardmarket_product_name=preferred_cardmarket_product_name,
-        cardmarket_variant_name=preferred_cardmarket_variant_name,
-        card_name=preferred_cardmarket_product_name,
-        has_multiple_variants=payload.cardmarket_match_quality in {CARDMARKET_MATCH_AMBIGUOUS, CARDMARKET_MATCH_FAILED},
-        allow_fallback=True,
+    existing_cardmarket_identity_matches_payload = (
+        card_print.set_code == payload.set_code
+        and _normalize_language_code(card_print.language) == normalized_language
+        and card_print.card_number == payload.card_number
+        and card_print.rarity == payload.rarity
     )
+    existing_safe_cardmarket_url = (
+        card_print.cardmarket_product_url
+        if existing_cardmarket_identity_matches_payload and card_print.cardmarket_match_quality in CARDMARKET_SAFE_MATCH_QUALITIES
+        else None
+    )
+    existing_safe_cardmarket_slug = card_print.cardmarket_product_slug if existing_safe_cardmarket_url else None
+    existing_safe_cardmarket_set_slug = card_print.cardmarket_set_slug if existing_safe_cardmarket_url else None
+    existing_safe_match_quality = card_print.cardmarket_match_quality if existing_safe_cardmarket_url else None
+    existing_safe_verified_at = card_print.cardmarket_verified_at if existing_safe_cardmarket_url else None
+    existing_safe_variant_name = card_print.cardmarket_variant_name if existing_safe_cardmarket_url else preferred_cardmarket_variant_name
 
-    card_print.language = payload.language
+    cardmarket_resolution = await _resolve_exact_cardmarket_product(
+        db,
+        card=card,
+        card_print=card_print,
+        payload=payload,
+        normalized_language=normalized_language,
+        matched_card_set=matched_card_set,
+    )
+    has_verified_cardmarket_product = cardmarket_resolution.match_quality in CARDMARKET_SAFE_MATCH_QUALITIES and bool(cardmarket_resolution.url)
+
+    card_print.language = normalized_language
     card_print.set_name = payload.set_name
     card_print.set_code = payload.set_code
     card_print.card_number = payload.card_number
@@ -1385,20 +1940,81 @@ async def upsert_card(db: AsyncSession, payload: CardPayload, inventory_item_id:
     card_print.rarity_code = payload.rarity_code
     card_print.edition = payload.edition
     card_print.release_date = payload.release_date
-    card_print.cardmarket_product_url = cardmarket_resolution.url if cardmarket_resolution.mode in {CARDMARKET_MATCH_EXACT, CARDMARKET_MATCH_EXACT_VARIANT, CARDMARKET_MATCH_SET_NAME} else None
-    card_print.cardmarket_product_slug = cardmarket_resolution.product_slug if card_print.cardmarket_product_url else None
-    card_print.cardmarket_set_slug = cardmarket_resolution.set_slug or payload.cardmarket_set_slug
-    card_print.cardmarket_set_name = preferred_cardmarket_set_name
-    card_print.cardmarket_product_name = cardmarket_resolution.product_name or preferred_cardmarket_product_name
-    card_print.cardmarket_variant_name = cardmarket_resolution.variant_name or preferred_cardmarket_variant_name
+    card_print.cardmarket_product_url = cardmarket_resolution.url if has_verified_cardmarket_product else existing_safe_cardmarket_url
+    card_print.cardmarket_product_slug = (
+        cardmarket_resolution.product_slug
+        if has_verified_cardmarket_product
+        else existing_safe_cardmarket_slug
+    )
+    card_print.cardmarket_set_slug = (
+        cardmarket_resolution.set_slug
+        if has_verified_cardmarket_product
+        else existing_safe_cardmarket_set_slug or payload.cardmarket_set_slug
+    )
+    card_print.cardmarket_set_name = (
+        cardmarket_resolution.set_name
+        if has_verified_cardmarket_product and cardmarket_resolution.set_name
+        else preferred_cardmarket_set_name
+    )
+    card_print.cardmarket_product_name = (
+        cardmarket_resolution.product_name
+        if has_verified_cardmarket_product and cardmarket_resolution.product_name
+        else preferred_cardmarket_product_name
+    )
+    card_print.cardmarket_variant_name = (
+        cardmarket_resolution.variant_name
+        if has_verified_cardmarket_product
+        else existing_safe_variant_name
+    )
     card_print.cardmarket_category = payload.cardmarket_category or CARDMARKET_CATEGORY
-    card_print.cardmarket_match_quality = payload.cardmarket_match_quality or cardmarket_resolution.mode
-    card_print.cardmarket_verified_at = payload.cardmarket_verified_at or cardmarket_resolution.verified_at
+    card_print.cardmarket_match_quality = (
+        cardmarket_resolution.match_quality
+        if has_verified_cardmarket_product
+        else existing_safe_match_quality or cardmarket_resolution.match_quality
+    )
+    card_print.cardmarket_verified_at = (
+        cardmarket_resolution.verified_at
+        if has_verified_cardmarket_product
+        else existing_safe_verified_at
+    )
     card_print.cardmarket_expected_rarity = payload.cardmarket_expected_rarity or payload.rarity
-    card_print.cardmarket_expected_language = payload.cardmarket_expected_language or payload.language
+    card_print.cardmarket_expected_language = payload.cardmarket_expected_language or normalized_language
     card_print.cardmarket_expected_set_name = payload.cardmarket_expected_set_name or payload.set_name
 
+    if not has_verified_cardmarket_product:
+        logger.warning(
+            "Cardmarket product could not be verified for card '%s' (%s): %s",
+            card.name,
+            payload.set_code,
+            cardmarket_resolution.reason,
+        )
+
     await db.flush()
+
+    resolved_cardmarket_reference = card_print.cardmarket_product_url
+
+    duplicate_item = await _find_exact_inventory_duplicate(
+        db,
+        card_print_id=card_print.id,
+        payload=payload,
+        exclude_inventory_item_id=inventory_item_id,
+    )
+    if duplicate_item and inventory_item_id is None:
+        if payload.increment_existing_quantity_on_duplicate:
+            duplicate_item.quantity = int(duplicate_item.quantity or 0) + payload.quantity
+            if not duplicate_item.cardmarket_reference and resolved_cardmarket_reference:
+                duplicate_item.cardmarket_reference = resolved_cardmarket_reference
+            await db.flush()
+            return duplicate_item
+        raise DuplicateInventoryItemError(
+            existing_item_id=duplicate_item.id,
+            existing_quantity=int(duplicate_item.quantity or 0),
+            increment_by=payload.quantity,
+            card_name=card.name,
+            set_code=card_print.set_code,
+            language=card_print.language,
+            condition=payload.condition,
+        )
 
     if inventory_item_id:
         item = await db.get(InventoryItem, inventory_item_id)
@@ -1415,7 +2031,7 @@ async def upsert_card(db: AsyncSession, payload: CardPayload, inventory_item_id:
     item.purchase_price = payload.purchase_price
     item.current_market_price = payload.current_market_price
     item.current_price_currency = payload.current_price_currency
-    item.cardmarket_reference = payload.cardmarket_reference or card_print.cardmarket_product_url or cardmarket_resolution.url
+    item.cardmarket_reference = resolved_cardmarket_reference
     item.notes = payload.notes
     item.tags = payload.tags
     if payload.current_market_price is not None:
@@ -1445,9 +2061,9 @@ async def upsert_card(db: AsyncSession, payload: CardPayload, inventory_item_id:
                     "card_number": card_print.card_number,
                     "rarity": card_print.rarity,
                     "language": card_print.language,
-                    "source_url": payload.cardmarket_reference,
-                    "cardmarket_product_url": payload.cardmarket_product_url,
-                    "source_product_id": payload.external_ids.get("cardmarket"),
+                    "source_url": resolved_cardmarket_reference or payload.cardmarket_reference,
+                    "cardmarket_product_url": card_print.cardmarket_product_url or payload.cardmarket_product_url,
+                    "source_product_id": card_print.cardmarket_product_slug or payload.external_ids.get("cardmarket"),
                 },
             )
         )
@@ -1461,15 +2077,38 @@ async def upsert_card(db: AsyncSession, payload: CardPayload, inventory_item_id:
         if not mapping:
             mapping = SourceMapping(target_type="card_print", target_id=card_print.id, provider_key=provider_key, external_id=external_id)
             db.add(mapping)
+            existing_mappings[provider_key] = mapping
         mapping.external_id = external_id
         if provider_key == "cardmarket":
             mapping.external_url = (
-                normalize_cardmarket_product_url(payload.cardmarket_product_url)
+                normalize_cardmarket_product_url(card_print.cardmarket_product_url)
+                or normalize_cardmarket_product_url(payload.cardmarket_product_url)
                 or normalize_cardmarket_product_url(payload.cardmarket_reference)
                 or normalize_cardmarket_product_url(external_id)
+                or card_print.cardmarket_product_url
                 or payload.cardmarket_product_url
                 or payload.cardmarket_reference
             )
+        mapping.last_synced_at = datetime.utcnow()
+
+    if card_print.cardmarket_product_url:
+        mapping = existing_mappings.get("cardmarket")
+        if not mapping:
+            mapping = SourceMapping(
+                target_type="card_print",
+                target_id=card_print.id,
+                provider_key="cardmarket",
+                external_id=card_print.cardmarket_product_slug or card_print.cardmarket_product_url,
+            )
+            db.add(mapping)
+            existing_mappings["cardmarket"] = mapping
+        mapping.external_id = card_print.cardmarket_product_slug or card_print.cardmarket_product_url
+        mapping.external_url = card_print.cardmarket_product_url
+        mapping.payload = {
+            "set_slug": card_print.cardmarket_set_slug,
+            "product_slug": card_print.cardmarket_product_slug,
+            "match_quality": card_print.cardmarket_match_quality,
+        }
         mapping.last_synced_at = datetime.utcnow()
 
     await db.flush()
@@ -1514,13 +2153,22 @@ async def price_history_for_card(db: AsyncSession, inventory_item_id: int) -> li
         converted_price, conversion_note = await _display_price_value(entry.price, entry.currency, display_currency)
         payload = entry.payload or {}
         lowest_offer_price = await _display_optional_price_value(payload.get("lowest_offer_price"), entry.currency, display_currency)
-        selected_market_price = await _display_optional_price_value(payload.get("selected_market_price"), entry.currency, display_currency)
+        selected_market_price = await _display_optional_price_value(
+            payload.get("market_price_median_top5") if payload.get("market_price_median_top5") is not None else payload.get("selected_market_price"),
+            entry.currency,
+            display_currency,
+        )
         price_trend = await _display_optional_price_value(payload.get("price_trend"), entry.currency, display_currency)
         avg_1d = await _display_optional_price_value(payload.get("avg_1d"), entry.currency, display_currency)
         avg_7d = await _display_optional_price_value(payload.get("avg_7d"), entry.currency, display_currency)
         avg_30d = await _display_optional_price_value(payload.get("avg_30d"), entry.currency, display_currency)
+        top5_offer_prices = await _display_price_sample_values(
+            payload.get("top5_offer_prices") if payload.get("top5_offer_prices") is not None else payload.get("raw_offer_prices_sample"),
+            entry.currency,
+            display_currency,
+        )
         raw_offer_prices_sample = await _display_price_sample_values(
-            payload.get("raw_offer_prices_sample"),
+            payload.get("raw_offer_prices_sample") if payload.get("raw_offer_prices_sample") is not None else payload.get("top5_offer_prices"),
             entry.currency,
             display_currency,
         )
@@ -1541,14 +2189,18 @@ async def price_history_for_card(db: AsyncSession, inventory_item_id: int) -> li
                 language=payload.get("matched_language") or payload.get("language"),
                 lowest_offer_price=lowest_offer_price,
                 selected_market_price=selected_market_price,
+                market_price_median_top5=selected_market_price,
                 pricing_strategy_used=payload.get("pricing_strategy_used"),
-                offer_count_considered=payload.get("offer_count_considered"),
+                offer_count_considered=payload.get("offers_considered_count") or payload.get("offer_count_considered"),
+                offers_considered_count=payload.get("offers_considered_count") or payload.get("offer_count_considered"),
                 outlier_detected=payload.get("outlier_detected"),
                 price_trend=price_trend,
                 avg_1d=avg_1d,
                 avg_7d=avg_7d,
                 avg_30d=avg_30d,
                 filters_used=payload.get("filters_used"),
+                parse_status=payload.get("parse_status"),
+                top5_offer_prices=top5_offer_prices,
                 raw_offer_prices_sample=raw_offer_prices_sample,
             )
         )
