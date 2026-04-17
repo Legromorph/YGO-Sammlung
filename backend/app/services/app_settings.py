@@ -9,7 +9,7 @@ from app.schemas import AppSettingsPayload
 DEFAULT_APP_SETTINGS = {
     "preferred_currency": "EUR",
     "preferred_card_language": "de",
-    "preferred_search_language": "de",
+    "preferred_search_language": "de,en",
     "preferred_price_language": "de",
 }
 
@@ -30,6 +30,21 @@ def _normalize_language(value: str | None) -> str:
     return candidate[:16] or "de"
 
 
+def _normalize_language_list(value: str | None, *, fallback: str = DEFAULT_APP_SETTINGS["preferred_search_language"]) -> str:
+    raw_parts = [part.strip() for part in (value or "").split(",") if part.strip()]
+    normalized_parts: list[str] = []
+    seen: set[str] = set()
+    for part in raw_parts:
+        normalized = _normalize_language(part)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_parts.append(normalized)
+    if not normalized_parts:
+        return fallback
+    return ",".join(normalized_parts)[:16]
+
+
 async def get_app_settings(db: AsyncSession) -> AppSetting:
     result = await db.execute(select(AppSetting).order_by(AppSetting.id.asc()).limit(1))
     setting = result.scalar_one_or_none()
@@ -47,7 +62,7 @@ async def update_app_settings(db: AsyncSession, payload: AppSettingsPayload) -> 
     setting = await get_app_settings(db)
     setting.preferred_currency = _normalize_currency(payload.preferred_currency)
     setting.preferred_card_language = _normalize_language(payload.preferred_card_language)
-    setting.preferred_search_language = _normalize_language(payload.preferred_search_language)
+    setting.preferred_search_language = _normalize_language_list(payload.preferred_search_language)
     setting.preferred_price_language = _normalize_language(payload.preferred_price_language)
     await db.flush()
     return setting
