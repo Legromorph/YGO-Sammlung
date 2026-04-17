@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import logging
 
+from app.config import settings
 from app.models import Card, CardPrint
 
 from .offers_parser import CardmarketOffersParseResult, CardmarketOffersParser
@@ -11,10 +12,23 @@ from .page_fetcher import CardmarketFetchedPage, CardmarketPageFetcher
 from .product_resolver import CardmarketProductResolver, get_cardmarket_product_resolver
 from .summary_parser import CardmarketSummary, CardmarketSummaryParser
 from .types import CardmarketPrintContext, CardmarketResolvedProduct
-from .url_builder import CARDMARKET_MATCH_AMBIGUOUS, CARDMARKET_MATCH_FAILED, CARDMARKET_MATCH_SET_NAME
+from .url_builder import (
+    CARDMARKET_MATCH_AMBIGUOUS,
+    CARDMARKET_MATCH_EXACT,
+    CARDMARKET_MATCH_EXACT_VARIANT,
+    CARDMARKET_MATCH_FAILED,
+    CARDMARKET_MATCH_SET_NAME,
+    normalize_cardmarket_product_url,
+    split_cardmarket_product_url,
+)
 
 
 logger = logging.getLogger(__name__)
+TRUSTED_CARDMARKET_MATCH_QUALITIES = {
+    CARDMARKET_MATCH_EXACT,
+    CARDMARKET_MATCH_EXACT_VARIANT,
+    CARDMARKET_MATCH_SET_NAME,
+}
 
 
 @dataclass(slots=True)
@@ -33,6 +47,7 @@ class CardmarketPricingResult:
     fetched_at: datetime
     top5_offer_prices: list[float] = field(default_factory=list)
     parse_status: str = "parsed"
+    fetch_mode: str | None = None
     match_quality: str = CARDMARKET_MATCH_FAILED
     note: str | None = None
     resolved_product: CardmarketResolvedProduct | None = None
@@ -97,6 +112,38 @@ class CardmarketPricingService:
             f"30d={summary.avg_30d if summary.avg_30d is not None else 'n/a'}."
         )
 
+    def _trusted_resolved_product(
+        self,
+        context: CardmarketPrintContext,
+        card_print: CardPrint,
+        *,
+        cardmarket_reference: str | None = None,
+    ) -> CardmarketResolvedProduct | None:
+        if not settings.cardmarket_trust_verified_product_urls:
+            return None
+
+        trusted_url = normalize_cardmarket_product_url(cardmarket_reference or card_print.cardmarket_product_url)
+        match_quality = (card_print.cardmarket_match_quality or "").strip()
+        if not trusted_url or match_quality not in TRUSTED_CARDMARKET_MATCH_QUALITIES:
+            return None
+
+        _, set_slug, product_slug = split_cardmarket_product_url(trusted_url)
+        return CardmarketResolvedProduct(
+            url=trusted_url,
+            set_slug=set_slug or card_print.cardmarket_set_slug,
+            product_slug=product_slug or card_print.cardmarket_product_slug,
+            product_name=card_print.cardmarket_product_name or context.product_name,
+            set_name=card_print.cardmarket_set_name or context.set_name,
+            rarity=card_print.cardmarket_expected_rarity or card_print.rarity,
+            card_number=card_print.card_number or context.card_number,
+            variant_name=card_print.cardmarket_variant_name or context.variant_name,
+            match_quality=match_quality,
+            verified_at=card_print.cardmarket_verified_at,
+            reason="trusted stored product url",
+            parse_status="cached",
+            set_slug_source="stored_verified_url",
+        )
+
     async def fetch_for_print(
         self,
         card: Card,
@@ -107,7 +154,11 @@ class CardmarketPricingService:
     ) -> CardmarketPricingResult:
         context = self._build_context(card, card_print, cardmarket_reference=cardmarket_reference)
 
-        resolved_product = await self.resolver.resolve(context)
+        resolved_product = self._trusted_resolved_product(context, card_print, cardmarket_reference=cardmarket_reference)
+        if resolved_product:
+            logger.info("Using trusted stored Cardmarket URL for card_print %s: %s", card_print.id, resolved_product.url)
+        else:
+            resolved_product = await self.resolver.resolve(context)
         if not resolved_product.url or resolved_product.match_quality == CARDMARKET_MATCH_FAILED:
             logger.warning("Failed to resolve Cardmarket product for card_print %s: %s", card_print.id, resolved_product.reason)
             return CardmarketPricingResult(
@@ -124,6 +175,7 @@ class CardmarketPricingService:
                 filters_used={},
                 fetched_at=datetime.utcnow(),
                 parse_status="failed",
+                fetch_mode=None,
                 match_quality=resolved_product.match_quality,
                 note=f"Cardmarket-Link konnte nicht gebaut werden: {resolved_product.reason}",
                 resolved_product=resolved_product,
@@ -176,6 +228,7 @@ class CardmarketPricingService:
                 fetched_at=fetched_page.fetched_at,
                 top5_offer_prices=[],
                 parse_status=offers.parse_status,
+                fetch_mode=fetched_page.parse_status,
                 match_quality=resolved_product.match_quality,
                 note="Keine passenden Cardmarket-Angebote nach Filterung vorhanden.",
                 resolved_product=resolved_product,
@@ -202,6 +255,7 @@ class CardmarketPricingService:
             fetched_at=fetched_page.fetched_at,
             top5_offer_prices=offers.top5_offer_prices,
             parse_status="parsed",
+            fetch_mode=fetched_page.parse_status,
             match_quality=resolved_product.match_quality,
             note=self._note(offers=offers, summary=summary),
             resolved_product=resolved_product,
