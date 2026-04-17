@@ -90,6 +90,7 @@ export interface SyncJobResponse {
   priority?: number;
   payload?: Record<string, unknown> | null;
   log_excerpt?: string | null;
+  log_details?: string | null;
   error_message?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
@@ -522,6 +523,7 @@ export interface SyncJob {
   priority?: number;
   payload?: Record<string, unknown> | null;
   log_excerpt?: string | null;
+  log_details?: string | null;
   error_message?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
