@@ -26,6 +26,17 @@ const currencyOptions = [
   { value: 'USD', label: 'US Dollar (USD)' },
 ];
 
+function parseSearchLanguages(value: string | undefined): string[] {
+  return Array.from(
+    new Set(
+      (value || 'de,en')
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
 export default function SettingsPage() {
   const { settings, loading, error, refreshSettings } = useAppSettings();
   const [form, setForm] = useState<AppSettings>(settings);
@@ -112,8 +123,17 @@ export default function SettingsPage() {
               select
               fullWidth
               label="Bevorzugte Suchsprache"
-              value={form.preferred_search_language}
-              onChange={(event) => updateForm({ preferred_search_language: event.target.value })}
+              value={parseSearchLanguages(form.preferred_search_language)}
+              onChange={(event) =>
+                updateForm({
+                  preferred_search_language: (Array.isArray(event.target.value) ? event.target.value : [event.target.value]).join(','),
+                })
+              }
+              SelectProps={{
+                multiple: true,
+                renderValue: (selected) => (Array.isArray(selected) ? selected.join(', ').toUpperCase() : String(selected)),
+              }}
+              helperText="Mehrfachauswahl moeglich. Standard ist DE und EN."
             >
               {languageOptions.map((option) => (
                 <MenuItem key={option.value} value={option.value}>
@@ -146,4 +166,3 @@ export default function SettingsPage() {
     </Stack>
   );
 }
-
