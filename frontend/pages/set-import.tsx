@@ -287,6 +287,10 @@ export default function SetImportPage() {
     new Set(selectedRows.map((card) => card.current_price_currency).filter((currency): currency is string => Boolean(currency))),
   );
   const estimatedMarketTotal = selectedRows.reduce((sum, card) => sum + (card.current_market_price || 0) * card.selectedQuantity, 0);
+  const allocationDifference = parsedDisplayTotalPrice !== null && allocationPreview.totalAllocatedPrice !== null
+    ? Number((parsedDisplayTotalPrice - allocationPreview.totalAllocatedPrice).toFixed(2))
+    : null;
+  const isImportBlocked = Boolean(selectedSet && !selectedSet.is_complete);
 
   const handleQuantityChange = (cardPrintId: number, nextQuantity: number) => {
     setSuccess(null);
@@ -327,7 +331,10 @@ export default function SetImportPage() {
         `Batch #${response.data.purchase_batch_id} gespeichert: ${response.data.total_quantity} Karten, ${formatCurrency(
           response.data.total_allocated_price,
           response.data.currency,
-        )} verteilt, durchschnittlich ${formatCurrency(response.data.allocated_unit_price, response.data.currency)} pro Karte.${
+        )} verteilt, durchschnittlich ${formatCurrency(response.data.allocated_unit_price, response.data.currency)} pro Karte, Rundungsdifferenz ${formatCurrency(
+          response.data.allocation_difference,
+          response.data.currency,
+        )}.${
           response.data.price_sync_job ? ` Preisjob #${response.data.price_sync_job.id} wurde direkt gestartet.` : ''
         }`,
       );
@@ -549,6 +556,11 @@ export default function SetImportPage() {
           {selectedSet.warning}
         </Alert>
       ) : null}
+      {isImportBlocked ? (
+        <Alert severity="error" icon={<WarningAmberRoundedIcon />}>
+          Der Import ist gesperrt, bis das Set vollstaendig validiert wurde. Bitte zuerst die Set-Zuordnung bzw. den Sync korrigieren.
+        </Alert>
+      ) : null}
 
       <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', xl: '2.25fr 1fr' }, alignItems: 'start' }}>
         <Paper sx={{ overflow: 'hidden' }}>
@@ -689,6 +701,12 @@ export default function SetImportPage() {
                 </Typography>
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                <Typography color="text.secondary">Kontrolle Verteilung</Typography>
+                <Typography fontWeight={700}>
+                  {allocationDifference === null ? 'n/a' : formatCurrency(allocationDifference, displayCurrency)}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
                 <Typography color="text.secondary">Marktreferenz</Typography>
                 <Typography fontWeight={700}>
                   {marketCurrencies.length <= 1
@@ -733,7 +751,7 @@ export default function SetImportPage() {
               variant="contained"
               size="large"
               startIcon={saving ? <CircularProgress size={18} color="inherit" /> : <AddTaskRoundedIcon />}
-              disabled={saving || !selectedSet || !selectedRows.length || parsedDisplayTotalPrice === null}
+              disabled={saving || !selectedSet || !selectedRows.length || parsedDisplayTotalPrice === null || isImportBlocked}
               fullWidth
               onClick={() => void handleSave()}
             >
