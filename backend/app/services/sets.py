@@ -18,6 +18,18 @@ from app.services.currency import convert_amount
 
 logger = logging.getLogger(__name__)
 
+LANGUAGE_SET_CODE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "de": ("DE",),
+    "en": ("EN",),
+    "fr": ("FR",),
+    "it": ("IT",),
+    "es": ("ES", "SP"),
+    "pt": ("PT",),
+    "jp": ("JP",),
+    "ja": ("JP",),
+    "ko": ("KR",),
+}
+
 
 def normalize_name(value: str) -> str:
     return " ".join(value.lower().split())
@@ -78,6 +90,73 @@ def _derive_print_language(set_code: str | None) -> str:
     if token.startswith("KR"):
         return "ko"
     return "en"
+
+
+def _preferred_set_code_prefix(language: str | None) -> str | None:
+    normalized_language = (language or "").strip().lower()
+    prefixes = LANGUAGE_SET_CODE_PREFIXES.get(normalized_language)
+    return prefixes[0] if prefixes else None
+
+
+def _translate_prefixed_value(value: str | None, language: str | None) -> str | None:
+    normalized_value = (value or "").strip().upper()
+    replacement_prefix = _preferred_set_code_prefix(language)
+    if not normalized_value or not replacement_prefix:
+        return normalized_value or None
+
+    match = re.match(r"^([A-Z]{2,3})(.*)$", normalized_value)
+    if not match:
+        return normalized_value
+    return f"{replacement_prefix}{match.group(2)}"
+
+
+def _translate_set_code_language(set_code: str | None, language: str | None) -> str | None:
+    normalized_set_code = (set_code or "").strip().upper()
+    if not normalized_set_code:
+        return None
+    replacement_prefix = _preferred_set_code_prefix(language)
+    if not replacement_prefix or "-" not in normalized_set_code:
+        return normalized_set_code
+
+    series, suffix = normalized_set_code.split("-", 1)
+    translated_suffix = _translate_prefixed_value(suffix, language)
+    if not translated_suffix:
+        return normalized_set_code
+    return f"{series}-{translated_suffix}"
+
+
+def _translate_card_number_language(card_number: str | None, language: str | None, *, set_code: str | None = None) -> str | None:
+    translated_from_value = _translate_prefixed_value(card_number, language)
+    if translated_from_value:
+        return translated_from_value
+    translated_set_code = _translate_set_code_language(set_code, language)
+    if translated_set_code:
+        return _derive_card_number(translated_set_code)
+    return (card_number or "").strip().upper() or None
+
+
+def _set_code_language_neutral_signature(set_code: str | None) -> tuple[str, str] | None:
+    normalized_set_code = (set_code or "").strip().upper()
+    if not normalized_set_code:
+        return None
+    if "-" not in normalized_set_code:
+        return _normalize_lookup_value(normalized_set_code), ""
+
+    series, suffix = normalized_set_code.split("-", 1)
+    match = re.match(r"([A-Z]{2,3})([A-Z0-9-]+)$", suffix)
+    if not match:
+        return _normalize_lookup_value(series), _normalize_lookup_value(suffix)
+    return _normalize_lookup_value(series), _normalize_lookup_value(match.group(2))
+
+
+def _print_signature(card_print: CardPrint) -> tuple[int, str, str, str]:
+    set_signature = _set_code_language_neutral_signature(card_print.set_code) or ("", "")
+    return (
+        int(card_print.card_id),
+        set_signature[0],
+        set_signature[1],
+        _normalize_lookup_value(card_print.rarity),
+    )
 
 
 def _placeholder_url(set_id: int, card_name: str) -> str:
@@ -219,6 +298,140 @@ async def _local_set_counts(db: AsyncSession, card_set: CardSet) -> tuple[int, i
         matching_card_ids.add(card_print.card_id)
         matching_print_count += 1
     return len(matching_card_ids), matching_print_count
+
+
+def _select_translation_source_language(prints: list[CardPrint], requested_language: str) -> str | None:
+    counts: dict[str, int] = {}
+    for card_print in prints:
+        language = (card_print.language or "").strip().lower()
+        if not language:
+            continue
+        counts[language] = counts.get(language, 0) + 1
+
+    if not counts:
+        return None
+
+    if requested_language != "en" and counts.get("en"):
+        return "en"
+
+    fallback_languages = [language for language in counts if language != requested_language]
+    if not fallback_languages:
+        return None
+    return max(fallback_languages, key=lambda language: (counts.get(language, 0), language == "en", language))
+
+
+async def _ensure_requested_language_prints(db: AsyncSession, card_set: CardSet, requested_language: str) -> None:
+    normalized_language = (requested_language or "").strip().lower()
+    if not normalized_language:
+        return
+
+    result = await db.execute(
+        select(CardPrint)
+        .where(CardPrint.set_id == card_set.id)
+        .options(selectinload(CardPrint.card))
+    )
+    local_prints = [card_print for card_print in result.scalars().all() if _local_card_print_matches_set(card_print, card_set)]
+    if not local_prints:
+        return
+
+    source_language = _select_translation_source_language(local_prints, normalized_language)
+    if not source_language:
+        return
+
+    source_prints = [card_print for card_print in local_prints if (card_print.language or "").strip().lower() == source_language]
+    if not source_prints:
+        return
+
+    target_prints = [card_print for card_print in local_prints if (card_print.language or "").strip().lower() == normalized_language]
+    target_by_signature = {
+        _print_signature(card_print): card_print
+        for card_print in target_prints
+    }
+
+    mapping_target_ids = [card_print.id for card_print in [*source_prints, *target_prints]]
+    mapping_result = await db.execute(
+        select(SourceMapping).where(
+            SourceMapping.target_type == "card_print",
+            SourceMapping.provider_key == "ygoprodeck",
+            SourceMapping.target_id.in_(mapping_target_ids or [-1]),
+        )
+    )
+    mappings_by_target_id = {mapping.target_id: mapping for mapping in mapping_result.scalars().all()}
+
+    derived_any = False
+    for source_print in source_prints:
+        signature = _print_signature(source_print)
+        target_print = target_by_signature.get(signature)
+        is_new_target = target_print is None
+        if is_new_target:
+            target_print = CardPrint(card_id=source_print.card_id, set_id=source_print.set_id, language=normalized_language)
+            db.add(target_print)
+            await db.flush()
+            target_by_signature[signature] = target_print
+
+        translated_set_code = _translate_set_code_language(source_print.set_code, normalized_language) or source_print.set_code
+        translated_card_number = _translate_card_number_language(
+            source_print.card_number,
+            normalized_language,
+            set_code=source_print.set_code,
+        ) or _derive_card_number(translated_set_code)
+
+        target_print.set_id = source_print.set_id
+        target_print.language = normalized_language
+        target_print.set_name = source_print.set_name or card_set.name
+        target_print.set_code = translated_set_code
+        target_print.card_number = translated_card_number
+        target_print.rarity = source_print.rarity
+        target_print.rarity_code = source_print.rarity_code
+        target_print.edition = source_print.edition
+        target_print.release_date = source_print.release_date
+        target_print.remote_image_url = source_print.remote_image_url
+        target_print.cardmarket_set_slug = source_print.cardmarket_set_slug
+        target_print.cardmarket_set_name = source_print.cardmarket_set_name or source_print.set_name or card_set.name
+        target_print.cardmarket_product_name = source_print.cardmarket_product_name or source_print.card.name
+        target_print.cardmarket_variant_name = source_print.cardmarket_variant_name
+        target_print.cardmarket_category = source_print.cardmarket_category
+        target_print.cardmarket_expected_rarity = source_print.cardmarket_expected_rarity or source_print.rarity
+        target_print.cardmarket_expected_language = normalized_language
+        target_print.cardmarket_expected_set_name = source_print.cardmarket_expected_set_name or source_print.set_name or card_set.name
+        if is_new_target:
+            target_print.cardmarket_product_url = None
+            target_print.cardmarket_product_slug = None
+            target_print.cardmarket_match_quality = None
+            target_print.cardmarket_verified_at = None
+
+        source_mapping = mappings_by_target_id.get(source_print.id)
+        if source_mapping:
+            target_mapping = mappings_by_target_id.get(target_print.id)
+            if not target_mapping:
+                target_mapping = SourceMapping(
+                    target_type="card_print",
+                    target_id=target_print.id,
+                    provider_key=source_mapping.provider_key,
+                    external_id=source_mapping.external_id,
+                )
+                db.add(target_mapping)
+                mappings_by_target_id[target_print.id] = target_mapping
+
+            payload = dict(source_mapping.payload or {})
+            if translated_set_code:
+                payload["set_code"] = translated_set_code
+            target_mapping.external_id = source_mapping.external_id
+            target_mapping.external_url = source_mapping.external_url
+            target_mapping.payload = payload or None
+            target_mapping.last_synced_at = source_mapping.last_synced_at or datetime.utcnow()
+
+        derived_any = derived_any or is_new_target
+
+    if derived_any:
+        logger.info(
+            "Derived %s set print variants for set %s (%s) from %s source prints.",
+            normalized_language.upper(),
+            card_set.name,
+            card_set.set_code,
+            source_language.upper(),
+        )
+    await db.flush()
 
 
 async def _fetch_remote_cards_via_catalog_scan(
@@ -512,7 +725,12 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
     needs_sync = force or not local_loaded_print_count or not is_complete or is_stale
 
     if not needs_sync:
+        await _ensure_requested_language_prints(db, card_set, language)
+        local_loaded_card_count, local_loaded_print_count = await _local_set_counts(db, card_set)
+        card_set.loaded_card_count = local_loaded_card_count
+        card_set.loaded_print_count = local_loaded_print_count
         card_set.sync_warning = warning
+        await db.flush()
         return
 
     provider = get_card_data_provider()
@@ -522,8 +740,13 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
         expected_card_count=expected_card_count,
     )
     if not remote_cards:
+        await _ensure_requested_language_prints(db, card_set, language)
+        local_loaded_card_count, local_loaded_print_count = await _local_set_counts(db, card_set)
+        card_set.loaded_card_count = local_loaded_card_count
+        card_set.loaded_print_count = local_loaded_print_count
         card_set.sync_warning = f"Provider lieferte fuer {card_set.name} keine Karten."
         logger.warning("Set sync returned no cards for %s (%s).", card_set.name, card_set.set_code)
+        await db.flush()
         return
 
     if expected_card_count and len(remote_cards) < expected_card_count:
@@ -539,6 +762,7 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
     for remote_card in remote_cards:
         await _upsert_card_set_card(db, card_set, remote_card, provider_key=provider.provider_key)
 
+    await _ensure_requested_language_prints(db, card_set, language)
     local_loaded_card_count, local_loaded_print_count = await _local_set_counts(db, card_set)
     card_set.loaded_card_count = local_loaded_card_count
     card_set.loaded_print_count = local_loaded_print_count
@@ -693,4 +917,6 @@ async def get_card_set_cards(db: AsyncSession, set_id: int, *, language: str = "
     await db.flush()
 
     items.sort(key=lambda item: (_natural_sort_key(item.card_number or item.set_code), item.rarity or "", item.name))
-    return SetCardsResponse(set=_serialize_card_set(card_set), items=items)
+    serialized_set = _serialize_card_set(card_set)
+    serialized_set.set_code = _translate_set_code_language(serialized_set.set_code, requested_language) or serialized_set.set_code
+    return SetCardsResponse(set=serialized_set, items=items)
