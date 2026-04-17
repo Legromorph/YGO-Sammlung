@@ -245,6 +245,7 @@ def _build_snapshot_log_context(snapshot: object) -> dict[str, object]:
         "match_quality": getattr(snapshot, "match_quality", None),
         "note": getattr(snapshot, "note", None),
         "cardmarket_reference": getattr(snapshot, "cardmarket_reference", None),
+        "provider_diagnostics": indicators.get("provider_diagnostics"),
         "snapshot_indicators": indicators,
     }
 
@@ -1035,6 +1036,18 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                 )
                 snapshot = None
                 primary_provider_error: Exception | None = None
+                lookup_started_at = datetime.utcnow()
+                await _append_job_log(
+                    job_id,
+                    "Starting provider price lookup for inventory item.",
+                    context={
+                        **item_context,
+                        "lookup_started_at": lookup_started_at.isoformat(),
+                        "provider_timeout_seconds": price_lookup_timeout_seconds,
+                        "manual_trigger": is_manual_trigger,
+                    },
+                    excerpt=f"Item {item.id}: querying {provider.provider_key}.",
+                )
                 try:
                     snapshot = await asyncio.wait_for(
                         provider.fetch_price(
@@ -1103,6 +1116,10 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                     f" {snapshot.currency}" if snapshot.market_price is not None else "",
                 )
                 snapshot_context = _build_snapshot_log_context(snapshot)
+                lookup_completed_at = datetime.utcnow()
+                snapshot_context["lookup_started_at"] = lookup_started_at.isoformat()
+                snapshot_context["lookup_completed_at"] = lookup_completed_at.isoformat()
+                snapshot_context["lookup_duration_ms"] = int((lookup_completed_at - lookup_started_at).total_seconds() * 1000)
 
                 item.last_price_source = snapshot.source_key
                 item.last_priced_at = now
@@ -1228,12 +1245,17 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                 )
             except Exception as exc:
                 logger.exception("Price update failed for inventory item %s: %s", item.id, exc)
+                failure_logged_at = datetime.utcnow()
+                lookup_started_value = locals().get("lookup_started_at")
                 await _append_job_log(
                     job_id,
                     "Price update failed for inventory item.",
                     level="ERROR",
                     context={
                         **locals().get("item_context", {"inventory_item_id": item.id}),
+                        "lookup_started_at": lookup_started_value.isoformat() if lookup_started_value else None,
+                        "lookup_completed_at": failure_logged_at.isoformat(),
+                        "lookup_duration_ms": int((failure_logged_at - lookup_started_value).total_seconds() * 1000) if lookup_started_value else None,
                         "error_message": str(exc),
                         "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
                     },

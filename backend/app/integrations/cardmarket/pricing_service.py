@@ -51,6 +51,7 @@ class CardmarketPricingResult:
     match_quality: str = CARDMARKET_MATCH_FAILED
     note: str | None = None
     resolved_product: CardmarketResolvedProduct | None = None
+    diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 class CardmarketPricingService:
@@ -142,6 +143,26 @@ class CardmarketPricingService:
             reason="trusted stored product url",
             parse_status="cached",
             set_slug_source="stored_verified_url",
+            diagnostics={
+                "resolution_context": {
+                    "product_name": context.product_name,
+                    "set_name": context.set_name,
+                    "set_code": context.set_code,
+                    "rarity": context.rarity,
+                    "card_number": context.card_number,
+                    "language": context.language,
+                    "variant_count": context.variant_count,
+                    "variant_name": context.variant_name,
+                },
+                "resolution_trace": [
+                    {
+                        "stage": "trusted_stored_product_url",
+                        "candidate_url": trusted_url,
+                        "match_quality": match_quality,
+                        "verified_at": card_print.cardmarket_verified_at.isoformat() if card_print.cardmarket_verified_at else None,
+                    }
+                ],
+            },
         )
 
     async def fetch_for_print(
@@ -152,13 +173,46 @@ class CardmarketPricingService:
         *,
         cardmarket_reference: str | None = None,
     ) -> CardmarketPricingResult:
+        pricing_started_at = datetime.utcnow()
         context = self._build_context(card, card_print, cardmarket_reference=cardmarket_reference)
+        base_diagnostics = {
+            "provider": "cardmarket",
+            "pricing_started_at": pricing_started_at.isoformat(),
+            "context": {
+                "card_name": card.name,
+                "card_print_id": card_print.id,
+                "set_name": card_print.set_name,
+                "set_code": card_print.set_code,
+                "card_number": card_print.card_number,
+                "rarity": card_print.rarity,
+                "language": card_print.language,
+                "condition": condition,
+                "existing_cardmarket_reference": cardmarket_reference,
+                "stored_product_url": card_print.cardmarket_product_url,
+                "stored_product_slug": card_print.cardmarket_product_slug,
+                "stored_set_slug": card_print.cardmarket_set_slug,
+                "stored_match_quality": card_print.cardmarket_match_quality,
+            },
+        }
 
         resolved_product = self._trusted_resolved_product(context, card_print, cardmarket_reference=cardmarket_reference)
         if resolved_product:
             logger.info("Using trusted stored Cardmarket URL for card_print %s: %s", card_print.id, resolved_product.url)
         else:
             resolved_product = await self.resolver.resolve(context)
+        resolution_diagnostics = {
+            "resolved_product_url": resolved_product.url,
+            "resolved_set_slug": resolved_product.set_slug,
+            "resolved_product_slug": resolved_product.product_slug,
+            "resolved_product_name": resolved_product.product_name,
+            "resolved_set_name": resolved_product.set_name,
+            "resolved_variant_name": resolved_product.variant_name,
+            "resolved_match_quality": resolved_product.match_quality,
+            "resolved_reason": resolved_product.reason,
+            "resolved_parse_status": resolved_product.parse_status,
+            "resolved_set_slug_source": resolved_product.set_slug_source,
+            "resolver_diagnostics": resolved_product.diagnostics,
+        }
         if not resolved_product.url or resolved_product.match_quality == CARDMARKET_MATCH_FAILED:
             logger.warning("Failed to resolve Cardmarket product for card_print %s: %s", card_print.id, resolved_product.reason)
             return CardmarketPricingResult(
@@ -179,6 +233,11 @@ class CardmarketPricingService:
                 match_quality=resolved_product.match_quality,
                 note=f"Cardmarket-Link konnte nicht gebaut werden: {resolved_product.reason}",
                 resolved_product=resolved_product,
+                diagnostics={
+                    **base_diagnostics,
+                    "pricing_completed_at": datetime.utcnow().isoformat(),
+                    "resolution": resolution_diagnostics,
+                },
             )
 
         language_filter = self._language_filter(card_print.language)
@@ -232,6 +291,42 @@ class CardmarketPricingService:
                 match_quality=resolved_product.match_quality,
                 note="Keine passenden Cardmarket-Angebote nach Filterung vorhanden.",
                 resolved_product=resolved_product,
+                diagnostics={
+                    **base_diagnostics,
+                    "pricing_completed_at": datetime.utcnow().isoformat(),
+                    "resolution": resolution_diagnostics,
+                    "request": {
+                        "base_product_url": resolved_product.url,
+                        "filtered_request_url": fetched_page.requested_url,
+                        "seller_country": seller_country,
+                        "language_filter": language_filter,
+                        "min_condition": min_condition,
+                    },
+                    "response": {
+                        "final_url": fetched_page.final_url,
+                        "fetch_mode": fetched_page.parse_status,
+                        "fetched_at": fetched_page.fetched_at.isoformat(),
+                        "title_text": fetched_page.title_text,
+                    },
+                    "summary": {
+                        "product_name": summary.product_name,
+                        "variant_name": summary.variant_name,
+                        "set_name": summary.set_name,
+                        "rarity": summary.rarity,
+                        "card_number": summary.card_number,
+                        "price_trend": summary.price_trend,
+                        "avg_1d": summary.avg_1d,
+                        "avg_7d": summary.avg_7d,
+                        "avg_30d": summary.avg_30d,
+                        "currency": summary.currency,
+                    },
+                    "offers": {
+                        "parse_status": offers.parse_status,
+                        "offers_considered_count": offers.offers_considered_count,
+                        "top5_offer_prices": offers.top5_offer_prices,
+                        "market_price_median_top5": offers.market_price_median_top5,
+                    },
+                },
             )
 
         logger.info("Computed median market price: %s", offers.market_price_median_top5)
@@ -259,6 +354,43 @@ class CardmarketPricingService:
             match_quality=resolved_product.match_quality,
             note=self._note(offers=offers, summary=summary),
             resolved_product=resolved_product,
+            diagnostics={
+                **base_diagnostics,
+                "pricing_completed_at": datetime.utcnow().isoformat(),
+                "resolution": resolution_diagnostics,
+                "request": {
+                    "base_product_url": resolved_product.url,
+                    "filtered_request_url": fetched_page.requested_url,
+                    "seller_country": seller_country,
+                    "language_filter": language_filter,
+                    "min_condition": min_condition,
+                },
+                "response": {
+                    "final_url": fetched_page.final_url,
+                    "fetch_mode": fetched_page.parse_status,
+                    "fetched_at": fetched_page.fetched_at.isoformat(),
+                    "title_text": fetched_page.title_text,
+                },
+                "summary": {
+                    "product_name": summary.product_name,
+                    "variant_name": summary.variant_name,
+                    "set_name": summary.set_name,
+                    "rarity": summary.rarity,
+                    "card_number": summary.card_number,
+                    "price_trend": summary.price_trend,
+                    "avg_1d": summary.avg_1d,
+                    "avg_7d": summary.avg_7d,
+                    "avg_30d": summary.avg_30d,
+                    "currency": summary.currency,
+                },
+                "offers": {
+                    "parse_status": offers.parse_status,
+                    "offers_considered_count": offers.offers_considered_count,
+                    "top5_offer_prices": offers.top5_offer_prices,
+                    "market_price_median_top5": offers.market_price_median_top5,
+                    "all_offer_prices": offers.offer_prices,
+                },
+            },
         )
 
 

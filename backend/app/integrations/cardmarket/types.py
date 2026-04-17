@@ -36,3 +36,4 @@ class CardmarketResolvedProduct:
     reason: str
     parse_status: str
     set_slug_source: str | None = None
+    diagnostics: dict[str, object] = field(default_factory=dict)

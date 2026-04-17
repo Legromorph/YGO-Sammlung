@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 import logging
 import re
+import traceback
 
 from app.config import settings
 from app.integrations.card_data import get_card_data_provider
@@ -170,6 +171,13 @@ class YgoProDeckPriceProvider:
                     "rarity": card_print.rarity,
                     "language": card_print.language,
                     "condition": condition,
+                    "provider_diagnostics": {
+                        "provider": self.provider_key,
+                        "lookup_external_id": external_id,
+                        "lookup_name": card.name,
+                        "lookup_language": None if external_id else card_print.language,
+                        "matched_remote_card": False,
+                    },
                 },
             )
 
@@ -199,6 +207,16 @@ class YgoProDeckPriceProvider:
                     "rarity": card_print.rarity,
                     "language": card_print.language,
                     "condition": condition,
+                    "provider_diagnostics": {
+                        "provider": self.provider_key,
+                        "lookup_external_id": external_id,
+                        "lookup_name": card.name,
+                        "lookup_language": None if external_id else card_print.language,
+                        "matched_remote_card": True,
+                        "remote_external_id": remote_card.get("external_id"),
+                        "matched_print_found": bool(matched_print),
+                        "matched_set_code": matched_print.get("set_code") if matched_print else None,
+                    },
                 },
             )
 
@@ -224,6 +242,17 @@ class YgoProDeckPriceProvider:
                 "rarity": card_print.rarity,
                 "language": card_print.language,
                 "note": "Print-spezifischer YGOPRODeck-Setpreis.",
+                "provider_diagnostics": {
+                    "provider": self.provider_key,
+                    "lookup_external_id": external_id,
+                    "lookup_name": card.name,
+                    "lookup_language": None if external_id else card_print.language,
+                    "matched_remote_card": True,
+                    "remote_external_id": remote_card.get("external_id"),
+                    "matched_set_code": matched_print.get("set_code"),
+                    "matched_card_number": _derive_card_number(matched_print.get("set_code")),
+                    "matched_rarity": matched_print.get("set_rarity"),
+                },
             },
         )
 
@@ -280,6 +309,19 @@ class CardmarketPriceProvider:
                     "parse_status": "failed",
                     "exception_type": type(exc).__name__,
                     "error": str(exc),
+                    "provider_diagnostics": {
+                        "provider": "cardmarket",
+                        "card_name": card.name,
+                        "set_code": card_print.set_code,
+                        "card_number": card_print.card_number,
+                        "rarity": card_print.rarity,
+                        "language": card_print.language,
+                        "condition": condition,
+                        "requested_cardmarket_reference": cardmarket_reference,
+                        "exception_type": type(exc).__name__,
+                        "exception_message": str(exc),
+                        "exception_traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                    },
                 },
             )
 
@@ -312,6 +354,7 @@ class CardmarketPriceProvider:
             "rarity": card_print.rarity,
             "language": card_print.language,
             "condition": condition,
+            "provider_diagnostics": result.diagnostics,
         }
         if result.resolved_product:
             indicators.update(
