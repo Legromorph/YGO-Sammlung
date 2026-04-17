@@ -27,7 +27,7 @@ async def sync_jobs(
 
 @router.get("/jobs/{job_id}", response_model=SyncJobResponse)
 async def sync_job_detail(job_id: int, db: AsyncSession = Depends(get_db)) -> SyncJobResponse:
-    job = await get_sync_job(db, job_id)
+    job = await get_sync_job(db, job_id, include_details=True)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return job
