@@ -23,6 +23,12 @@ def normalize_name(value: str) -> str:
     return " ".join(value.lower().split())
 
 
+def _normalize_lookup_value(value: str | None) -> str:
+    if not value:
+        return ""
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
 def _parse_float(value: str | float | int | None) -> float | None:
     try:
         if value in (None, ""):
@@ -99,19 +105,79 @@ def _natural_sort_key(value: str | None) -> tuple:
     return tuple(int(part) if part.isdigit() else part for part in parts)
 
 
-def _matches_card_set(remote_print: dict, card_set: CardSet) -> bool:
-    remote_set_code = (remote_print.get("set_code") or "").upper()
-    catalog_set_code = (card_set.set_code or "").upper()
-    if catalog_set_code and remote_set_code:
-        if remote_set_code == catalog_set_code or remote_set_code.startswith(f"{catalog_set_code}-"):
-            return True
+def _merge_warning(existing_warning: str | None, additional_warning: str | None) -> str | None:
+    normalized_existing = (existing_warning or "").strip()
+    normalized_additional = (additional_warning or "").strip()
+    if not normalized_additional:
+        return normalized_existing or None
+    if not normalized_existing or normalized_additional in normalized_existing:
+        return normalized_existing or normalized_additional
+    return f"{normalized_existing} {normalized_additional}".strip()
 
-    remote_set_name = remote_print.get("set_name")
-    return bool(remote_set_name and normalize_name(remote_set_name) == card_set.normalized_name)
+
+def _set_code_prefix(value: str | None) -> str:
+    normalized = (value or "").strip().upper()
+    if not normalized:
+        return ""
+    return normalized.split("-", 1)[0]
+
+
+def _matches_card_set(remote_print: dict, card_set: CardSet) -> bool:
+    remote_set_name = _normalize_lookup_value(remote_print.get("set_name"))
+    catalog_set_name = _normalize_lookup_value(card_set.name)
+    remote_set_code_prefix = _set_code_prefix(remote_print.get("set_code"))
+    catalog_set_code_prefix = _set_code_prefix(card_set.set_code)
+
+    names_match = bool(remote_set_name and catalog_set_name and remote_set_name == catalog_set_name)
+    codes_match = bool(remote_set_code_prefix and catalog_set_code_prefix and remote_set_code_prefix == catalog_set_code_prefix)
+
+    if names_match and remote_set_code_prefix and catalog_set_code_prefix:
+        return codes_match
+    if names_match:
+        return True
+    if codes_match and not remote_set_name:
+        return True
+    if codes_match and not catalog_set_name:
+        return True
+    return False
+
+
+def _local_card_print_matches_set(card_print: CardPrint, card_set: CardSet) -> bool:
+    return _matches_card_set(
+        {
+            "set_name": card_print.set_name,
+            "set_code": card_print.set_code,
+        },
+        card_set,
+    )
 
 
 def _select_matching_remote_prints(remote_card: dict, card_set: CardSet) -> list[dict]:
     return [entry for entry in (remote_card.get("card_sets") or []) if _matches_card_set(entry, card_set)]
+
+
+def _dedupe_remote_cards(remote_cards: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen_external_ids: set[str] = set()
+    for remote_card in remote_cards:
+        external_id = str(remote_card.get("external_id") or "").strip()
+        if not external_id or external_id in seen_external_ids:
+            continue
+        seen_external_ids.add(external_id)
+        deduped.append(remote_card)
+    return deduped
+
+
+def _matching_remote_card_count(remote_cards: list[dict], card_set: CardSet) -> int:
+    return len(_dedupe_remote_cards([remote_card for remote_card in remote_cards if _select_matching_remote_prints(remote_card, card_set)]))
+
+
+def _is_suspiciously_small_result(expected_card_count: int, matched_card_count: int) -> bool:
+    if matched_card_count <= 0:
+        return False
+    if expected_card_count >= 8:
+        return matched_card_count <= max(2, expected_card_count // 4)
+    return expected_card_count == 0 and matched_card_count <= 1
 
 
 def _build_completeness_warning(card_set: CardSet) -> tuple[bool, str | None]:
@@ -141,15 +207,98 @@ def _expected_card_count(card_set: CardSet) -> int:
     return max(payload_count, direct_count)
 
 
-async def _local_set_counts(db: AsyncSession, set_id: int) -> tuple[int, int]:
-    row = await db.execute(
-        select(
-            func.count(func.distinct(CardPrint.card_id)),
-            func.count(CardPrint.id),
-        ).where(CardPrint.set_id == set_id)
+async def _local_set_counts(db: AsyncSession, card_set: CardSet) -> tuple[int, int]:
+    result = await db.execute(
+        select(CardPrint).where(CardPrint.set_id == card_set.id)
     )
-    loaded_card_count, loaded_print_count = row.one()
-    return int(loaded_card_count or 0), int(loaded_print_count or 0)
+    matching_card_ids: set[int] = set()
+    matching_print_count = 0
+    for card_print in result.scalars().all():
+        if not _local_card_print_matches_set(card_print, card_set):
+            continue
+        matching_card_ids.add(card_print.card_id)
+        matching_print_count += 1
+    return len(matching_card_ids), matching_print_count
+
+
+async def _fetch_remote_cards_via_catalog_scan(
+    provider,
+    *,
+    card_set: CardSet,
+    expected_card_count: int,
+    page_size: int = 1000,
+) -> tuple[list[dict], int]:
+    matched_cards: list[dict] = []
+    seen_external_ids: set[str] = set()
+    offset = 0
+    pages_scanned = 0
+
+    while True:
+        page = await provider.fetch_cards_page(offset=offset, limit=page_size)
+        if not page:
+            break
+        pages_scanned += 1
+
+        for remote_card in page:
+            if not _select_matching_remote_prints(remote_card, card_set):
+                continue
+            external_id = str(remote_card.get("external_id") or "").strip()
+            if not external_id or external_id in seen_external_ids:
+                continue
+            seen_external_ids.add(external_id)
+            matched_cards.append(remote_card)
+
+        if expected_card_count and len(matched_cards) >= expected_card_count:
+            break
+        if len(page) < page_size:
+            break
+        offset += len(page)
+
+    return matched_cards, pages_scanned
+
+
+async def _load_exact_remote_set_cards(
+    provider,
+    *,
+    card_set: CardSet,
+    expected_card_count: int,
+) -> tuple[list[dict], str, int, int]:
+    direct_remote_cards = await provider.fetch_cards_for_set(card_set.name)
+    direct_exact_cards = _dedupe_remote_cards(
+        [remote_card for remote_card in direct_remote_cards if _select_matching_remote_prints(remote_card, card_set)]
+    )
+    direct_exact_count = len(direct_exact_cards)
+    direct_is_complete = expected_card_count > 0 and direct_exact_count >= expected_card_count
+
+    if direct_exact_cards and (
+        direct_is_complete or (expected_card_count <= 0 and not _is_suspiciously_small_result(expected_card_count, direct_exact_count))
+    ):
+        return direct_exact_cards, "cardset_query", direct_exact_count, 0
+
+    logger.warning(
+        "Set query for %s (%s) returned only %s exact card(s) for expected %s. Falling back to catalog scan.",
+        card_set.name,
+        card_set.set_code,
+        direct_exact_count,
+        expected_card_count,
+    )
+    scanned_cards, pages_scanned = await _fetch_remote_cards_via_catalog_scan(
+        provider,
+        card_set=card_set,
+        expected_card_count=expected_card_count,
+    )
+    scanned_exact_cards = _dedupe_remote_cards(scanned_cards)
+    if scanned_exact_cards:
+        logger.info(
+            "Catalog scan recovered %s exact card(s) for %s (%s) after %s page(s).",
+            len(scanned_exact_cards),
+            card_set.name,
+            card_set.set_code,
+            pages_scanned,
+        )
+        return scanned_exact_cards, "catalog_scan", direct_exact_count, pages_scanned
+
+    return direct_exact_cards, "cardset_query", direct_exact_count, pages_scanned
 
 
 async def _find_card_by_external_id(db: AsyncSession, provider_key: str, external_id: str) -> Card | None:
@@ -237,16 +386,28 @@ async def sync_card_sets_catalog(db: AsyncSession, *, force: bool = False) -> No
         return
 
     existing_result = await db.execute(select(CardSet).where(CardSet.provider_key == provider.provider_key))
-    existing_by_name = {card_set.normalized_name: card_set for card_set in existing_result.scalars().all()}
+    existing_sets = existing_result.scalars().all()
+    existing_by_key = {
+        (card_set.normalized_name, _set_code_prefix(card_set.set_code)): card_set
+        for card_set in existing_sets
+    }
+    existing_by_name: dict[str, list[CardSet]] = {}
+    for card_set in existing_sets:
+        existing_by_name.setdefault(card_set.normalized_name, []).append(card_set)
     synced_at = datetime.utcnow()
 
     for remote_set in remote_sets:
         normalized_name = normalize_name(remote_set["name"])
-        card_set = existing_by_name.get(normalized_name)
+        remote_set_code_prefix = _set_code_prefix(remote_set.get("set_code"))
+        card_set = existing_by_key.get((normalized_name, remote_set_code_prefix))
+        if not card_set:
+            candidates = existing_by_name.get(normalized_name, [])
+            if len(candidates) == 1:
+                card_set = candidates[0]
         if not card_set:
             card_set = CardSet(provider_key=provider.provider_key, name=remote_set["name"], normalized_name=normalized_name)
             db.add(card_set)
-            existing_by_name[normalized_name] = card_set
+            existing_by_name.setdefault(normalized_name, []).append(card_set)
         card_set.name = remote_set["name"]
         card_set.normalized_name = normalized_name
         card_set.set_code = remote_set.get("set_code")
@@ -255,6 +416,7 @@ async def sync_card_sets_catalog(db: AsyncSession, *, force: bool = False) -> No
         card_set.source_payload = remote_set.get("payload")
         card_set.catalog_synced_at = synced_at
         card_set.last_synced_at = synced_at
+        existing_by_key[(normalized_name, remote_set_code_prefix)] = card_set
 
     await db.flush()
 
@@ -341,7 +503,7 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
     expected_card_count = _expected_card_count(card_set)
     if expected_card_count:
         card_set.card_count = expected_card_count
-    local_loaded_card_count, local_loaded_print_count = await _local_set_counts(db, card_set.id)
+    local_loaded_card_count, local_loaded_print_count = await _local_set_counts(db, card_set)
     card_set.loaded_card_count = local_loaded_card_count
     card_set.loaded_print_count = local_loaded_print_count
 
@@ -354,7 +516,11 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
         return
 
     provider = get_card_data_provider()
-    remote_cards = await provider.fetch_cards_for_set(card_set.name)
+    remote_cards, sync_strategy, direct_exact_count, pages_scanned = await _load_exact_remote_set_cards(
+        provider,
+        card_set=card_set,
+        expected_card_count=expected_card_count,
+    )
     if not remote_cards:
         card_set.sync_warning = f"Provider lieferte fuer {card_set.name} keine Karten."
         logger.warning("Set sync returned no cards for %s (%s).", card_set.name, card_set.set_code)
@@ -362,17 +528,18 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
 
     if expected_card_count and len(remote_cards) < expected_card_count:
         logger.warning(
-            "Canonical set import for %s returned only %s of expected %s cards. Requested language %s will be ignored for completeness.",
+            "Exact set sync for %s returned only %s of expected %s cards via %s. Requested language %s will be ignored for completeness.",
             card_set.name,
             len(remote_cards),
             expected_card_count,
+            sync_strategy,
             language,
         )
 
     for remote_card in remote_cards:
         await _upsert_card_set_card(db, card_set, remote_card, provider_key=provider.provider_key)
 
-    local_loaded_card_count, local_loaded_print_count = await _local_set_counts(db, card_set.id)
+    local_loaded_card_count, local_loaded_print_count = await _local_set_counts(db, card_set)
     card_set.loaded_card_count = local_loaded_card_count
     card_set.loaded_print_count = local_loaded_print_count
     card_set.cards_synced_at = datetime.utcnow()
@@ -382,15 +549,18 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
     if not is_complete:
         card_set.sync_warning = (
             f"Set moeglicherweise unvollstaendig: lokal {local_loaded_card_count} von erwarteten "
-            f"{expected_card_count} Karten nach dem Sync."
+            f"{expected_card_count} Karten nach dem Sync. Quelle={sync_strategy}, direkter Treffer={direct_exact_count}, Seiten im Vollscan={pages_scanned}."
         )
         logger.warning(
-            "Set %s (%s) remains incomplete after sync: %s of %s cards, %s prints.",
+            "Set %s (%s) remains incomplete after sync: %s of %s cards, %s prints. Strategy=%s direct_exact=%s pages_scanned=%s",
             card_set.name,
             card_set.set_code,
             local_loaded_card_count,
             expected_card_count,
             local_loaded_print_count,
+            sync_strategy,
+            direct_exact_count,
+            pages_scanned,
         )
     else:
         card_set.sync_warning = None
@@ -401,43 +571,59 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
 async def get_card_set_cards(db: AsyncSession, set_id: int, *, language: str = "de") -> SetCardsResponse:
     app_settings = await get_app_settings(db)
     display_currency = app_settings.preferred_currency
+    requested_language = (language or "de").strip().lower() or "de"
     await sync_card_sets_catalog(db)
     card_set = await db.get(CardSet, set_id)
     if not card_set:
         raise ValueError("Set not found.")
 
-    await sync_card_set_cards(db, card_set, language=language)
-
-    set_print_ids_stmt = select(CardPrint.id).where(CardPrint.set_id == card_set.id)
-    inventory_totals_result = await db.execute(
-        select(
-            InventoryItem.card_print_id,
-            func.coalesce(func.sum(InventoryItem.quantity), 0),
-            func.max(InventoryItem.current_market_price),
-            func.max(InventoryItem.current_price_currency),
-        )
-        .where(InventoryItem.card_print_id.in_(set_print_ids_stmt))
-        .group_by(InventoryItem.card_print_id)
-    )
-    inventory_totals = {
-        row[0]: {
-            "quantity": int(row[1] or 0),
-            "price": float(row[2]) if row[2] is not None else None,
-            "currency": row[3],
-        }
-        for row in inventory_totals_result.all()
-    }
+    await sync_card_set_cards(db, card_set, language=requested_language)
 
     result = await db.execute(
         select(CardPrint)
-        .where(CardPrint.set_id == card_set.id)
+        .where(
+            CardPrint.set_id == card_set.id,
+            CardPrint.language == requested_language,
+        )
         .options(
             selectinload(CardPrint.card),
             selectinload(CardPrint.image_assets),
         )
     )
-    prints = result.scalars().unique().all()
+    raw_prints = result.scalars().unique().all()
+    prints = [card_print for card_print in raw_prints if _local_card_print_matches_set(card_print, card_set)]
+    filtered_out_print_count = len(raw_prints) - len(prints)
+    if filtered_out_print_count > 0:
+        warning = f"{filtered_out_print_count} lokal verknuepfte Prints wurden wegen unpassender Set-Zuordnung ausgeblendet."
+        card_set.sync_warning = _merge_warning(card_set.sync_warning, warning)
+        logger.warning(
+            "Filtered %s locally linked print(s) from set %s (%s) because they do not match the canonical set signature.",
+            filtered_out_print_count,
+            card_set.name,
+            card_set.set_code,
+        )
     print_ids = [card_print.id for card_print in prints]
+
+    inventory_totals: dict[int, dict[str, object]] = {}
+    if print_ids:
+        inventory_totals_result = await db.execute(
+            select(
+                InventoryItem.card_print_id,
+                func.coalesce(func.sum(InventoryItem.quantity), 0),
+                func.max(InventoryItem.current_market_price),
+                func.max(InventoryItem.current_price_currency),
+            )
+            .where(InventoryItem.card_print_id.in_(print_ids))
+            .group_by(InventoryItem.card_print_id)
+        )
+        inventory_totals = {
+            row[0]: {
+                "quantity": int(row[1] or 0),
+                "price": float(row[2]) if row[2] is not None else None,
+                "currency": row[3],
+            }
+            for row in inventory_totals_result.all()
+        }
 
     mapping_result = await db.execute(
         select(SourceMapping).where(
@@ -502,9 +688,8 @@ async def get_card_set_cards(db: AsyncSession, set_id: int, *, language: str = "
     if duplicate_signatures:
         duplicate_message = f"Lokale Dubletten erkannt: {len(duplicate_signatures)} Print-Signaturen erscheinen mehrfach."
         logger.warning("Duplicate local set print signatures for %s (%s): %s", card_set.name, card_set.set_code, sorted(duplicate_signatures))
-        card_set.sync_warning = f"{card_set.sync_warning} {duplicate_message}".strip() if card_set.sync_warning else duplicate_message
+        card_set.sync_warning = _merge_warning(card_set.sync_warning, duplicate_message)
 
-    card_set.loaded_print_count = len(items)
     await db.flush()
 
     items.sort(key=lambda item: (_natural_sort_key(item.card_number or item.set_code), item.rarity or "", item.name))
