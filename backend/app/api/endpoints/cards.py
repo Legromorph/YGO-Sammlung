@@ -20,7 +20,9 @@ from app.schemas import (
     SyncJobResponse,
 )
 from app.services.app_settings import get_app_settings
+from app.services.card_creation import get_card_creation_orchestrator
 from app.services.cards import (
+    DuplicateInventoryItemError,
     delete_card,
     get_card_detail,
     get_card_lookup,
@@ -104,7 +106,7 @@ async def card_filter_options(db: AsyncSession = Depends(get_db)) -> CardFilterO
 @router.get("/lookup/search", response_model=list[CardLookupSuggestion])
 async def search_card_lookup(
     q: str = Query(min_length=2),
-    language: str = Query(default="de", min_length=2, max_length=8),
+    language: str = Query(default="de,en", min_length=2, max_length=16),
     limit: int = Query(default=8, ge=1, le=20),
     db: AsyncSession = Depends(get_db),
 ) -> list[CardLookupSuggestion]:
@@ -116,7 +118,7 @@ async def search_card_lookup(
 async def card_lookup_autofill(
     name: str | None = None,
     external_id: str | None = None,
-    language: str = Query(default="de", min_length=2, max_length=8),
+    language: str = Query(default="de,en", min_length=2, max_length=16),
     db: AsyncSession = Depends(get_db),
 ) -> CardLookupResponse:
     if not name and not external_id:
@@ -131,7 +133,7 @@ async def card_lookup_autofill(
 @router.get("/lookup/cardmarket-link", response_model=CardLookupResponse)
 async def cardmarket_link_lookup(
     url: str = Query(min_length=10),
-    language: str = Query(default="de", min_length=2, max_length=8),
+    language: str = Query(default="de,en", min_length=2, max_length=16),
     db: AsyncSession = Depends(get_db),
 ) -> CardLookupResponse:
     try:
@@ -145,45 +147,20 @@ async def cardmarket_link_lookup(
 @router.post("/", response_model=CardSummary, status_code=status.HTTP_201_CREATED)
 async def create_card(payload: CardPayload, db: AsyncSession = Depends(get_db)) -> CardSummary:
     try:
-        item = await upsert_card(db, payload)
-        await db.commit()
-        try:
-            await queue_price_update_job(
-                inventory_item_ids=[item.id],
-                card_print_ids=[item.card_print_id],
-                trigger="create_card",
-                reason="new_card_created",
-                available_at=datetime.utcnow(),
-                priority=settings.price_monitor_new_priority,
-            )
-        except Exception as exc:  # pragma: no cover - defensive post-create trigger
-            logger.exception("Failed to queue initial price update for inventory item %s: %s", item.id, exc)
-        detail = await get_card_detail(db, item.id)
-        if not detail:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Card could not be reloaded after creation")
-        return CardSummary(
-            **detail.model_dump(
-                exclude={
-                    "effect_text",
-                    "subtype",
-                    "archetype",
-                    "spell_trap_type",
-                    "rarity_code",
-                    "edition",
-                    "release_date",
-                    "cardmarket_reference",
-                    "tags",
-                    "link_arrows",
-                    "pendulum_scale",
-                    "pendulum_effect",
-                    "price_history",
-                    "source_mappings",
-                }
-            )
-        )
+        return await get_card_creation_orchestrator().create_card(db, payload)
+    except DuplicateInventoryItemError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.to_detail()) from exc
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed after pricing during card creation for '%s' (%s): %s", payload.name, payload.set_code, exc)
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Karte wurde nach dem Anlegen nicht korrekt verarbeitet. Bitte Backend-Logs pruefen.",
+        ) from exc
 
 
 @router.get("/{card_id}", response_model=CardDetail)
