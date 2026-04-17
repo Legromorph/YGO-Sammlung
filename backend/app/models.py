@@ -62,6 +62,11 @@ class CardSet(TimestampMixin, Base):
     release_date: Mapped[date | None] = mapped_column(Date)
     source_payload: Mapped[dict | None] = mapped_column(JSON)
     sync_warning: Mapped[str | None] = mapped_column(Text)
+    cardmarket_set_slug: Mapped[str | None] = mapped_column(String(255))
+    cardmarket_set_name: Mapped[str | None] = mapped_column(String(255))
+    cardmarket_aliases: Mapped[list[str] | None] = mapped_column(JSON)
+    cardmarket_slug_match_quality: Mapped[str | None] = mapped_column(String(40))
+    cardmarket_slug_verified_at: Mapped[datetime | None] = mapped_column(DateTime)
     catalog_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
     cards_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -94,7 +99,7 @@ class AppSetting(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     preferred_currency: Mapped[str] = mapped_column(String(8), default="EUR")
     preferred_card_language: Mapped[str] = mapped_column(String(16), default="de")
-    preferred_search_language: Mapped[str] = mapped_column(String(16), default="de")
+    preferred_search_language: Mapped[str] = mapped_column(String(16), default="de,en")
     preferred_price_language: Mapped[str] = mapped_column(String(16), default="de")
 
 
