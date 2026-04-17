@@ -48,6 +48,187 @@ type LookupSelection = {
   rarity?: string | null;
 };
 
+type SetGroupOption = {
+  key: string;
+  label: string;
+  options: CardLookupPrintOption[];
+};
+
+const languageSetCodePrefixes: Record<string, string[]> = {
+  de: ['DE'],
+  en: ['EN'],
+  fr: ['FR'],
+  it: ['IT'],
+  es: ['ES', 'SP'],
+  pt: ['PT'],
+  jp: ['JP'],
+  ja: ['JP'],
+  ko: ['KR'],
+};
+
+function extractSetCodeLanguagePrefix(setCode?: string | null): string | null {
+  const normalizedSetCode = (setCode || '').trim().toUpperCase();
+  if (!normalizedSetCode.includes('-')) {
+    return null;
+  }
+  const suffix = normalizedSetCode.split('-', 2)[1] || '';
+  const match = suffix.match(/^([A-Z]{2,3})/);
+  return match ? match[1] : null;
+}
+
+function validateSetCodeLanguage(language: string, setCode?: string | null): string | null {
+  const normalizedLanguage = (language || '').trim().toLowerCase();
+  const expectedPrefixes = languageSetCodePrefixes[normalizedLanguage];
+  if (!expectedPrefixes || !setCode?.trim()) {
+    return null;
+  }
+
+  const detectedPrefix = extractSetCodeLanguagePrefix(setCode);
+  if (!detectedPrefix || expectedPrefixes.includes(detectedPrefix)) {
+    return null;
+  }
+
+  return `Setcode passt nicht zur Sprache ${normalizedLanguage.toUpperCase()}. Erwartet: ${expectedPrefixes.join(', ')} nach dem Bindestrich (z. B. POTD-${expectedPrefixes[0]}011).`;
+}
+
+function buildSetCodeForLanguage(setCode: string | null | undefined, language: string): string | null {
+  const normalizedSetCode = (setCode || '').trim().toUpperCase();
+  const expectedPrefixes = languageSetCodePrefixes[(language || '').trim().toLowerCase()];
+  if (!normalizedSetCode || !expectedPrefixes?.length) {
+    return null;
+  }
+  if (!normalizedSetCode.includes('-')) {
+    return normalizedSetCode;
+  }
+
+  const [setPrefix, suffix = ''] = normalizedSetCode.split('-', 2);
+  const match = suffix.match(/^([A-Z]{2,3})(.*)$/);
+  if (!match) {
+    return normalizedSetCode;
+  }
+  return `${setPrefix}-${expectedPrefixes[0]}${match[2] || ''}`;
+}
+
+function normalizeSetGroupKey(option: Pick<CardLookupPrintOption, 'set_name' | 'set_code'>): string {
+  const normalizedSetCode = (option.set_code || '').trim().toUpperCase();
+  if (normalizedSetCode.includes('-')) {
+    const [series, suffix = ''] = normalizedSetCode.split('-', 2);
+    const match = suffix.match(/^([A-Z]{2,3})(.*)$/);
+    if (match) {
+      return `${series}-${match[2] || ''}`.toUpperCase();
+    }
+    return normalizedSetCode;
+  }
+  return (option.set_name || '').trim().toLowerCase();
+}
+
+function buildSetGroupOptions(printOptions: CardLookupPrintOption[]): SetGroupOption[] {
+  const groups = new Map<string, SetGroupOption>();
+  for (const option of printOptions) {
+    const key = normalizeSetGroupKey(option);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.options.push(option);
+      continue;
+    }
+    const labelParts = [trimValue(option.set_name), trimValue(option.set_code)].filter(Boolean);
+    groups.set(key, {
+      key,
+      label: labelParts.join(' | ') || 'Unbekanntes Set',
+      options: [option],
+    });
+  }
+  return Array.from(groups.values()).sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function buildVariantKey(option: CardLookupPrintOption): string {
+  return [trimValue(option.set_name), trimValue(option.set_code), trimValue(option.rarity), trimValue(option.card_number)].join('||');
+}
+
+function buildVariantLabel(option: CardLookupPrintOption): string {
+  return [trimValue(option.rarity), trimValue(option.card_number), trimValue(option.set_code)].filter(Boolean).join(' | ') || option.display_label;
+}
+
+function normalizeAutocompleteText(value?: string | null): string {
+  return (value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function parseLanguageList(value: string | undefined, fallback: string[] = ['de', 'en']): string[] {
+  const values = Array.from(
+    new Set(
+      (value || '')
+        .split(',')
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+  return values.length ? values : fallback;
+}
+
+function buildSearchLanguageQuery(preferredSearchLanguage: string | undefined, currentLanguage: string): string {
+  const preferred = parseLanguageList(preferredSearchLanguage, []);
+  const merged = Array.from(new Set([currentLanguage, 'de', 'en', ...preferred].filter(Boolean)));
+  return merged.join(',');
+}
+
+function matchesPrintOptionLanguage(option: CardLookupPrintOption, language: string): boolean {
+  const expectedPrefixes = languageSetCodePrefixes[(language || '').trim().toLowerCase()];
+  if (!expectedPrefixes?.length) {
+    return true;
+  }
+  const detectedPrefix = extractSetCodeLanguagePrefix(option.set_code);
+  if (!detectedPrefix) {
+    return true;
+  }
+  return expectedPrefixes.includes(detectedPrefix);
+}
+
+function translatePrintOptionLanguage(option: CardLookupPrintOption, language: string): CardLookupPrintOption {
+  const translatedSetCode = buildSetCodeForLanguage(option.set_code, language) || option.set_code;
+  return {
+    ...option,
+    set_code: translatedSetCode,
+    card_number: option.card_number || trimValue(translatedSetCode?.split('-').pop()),
+  };
+}
+
+function getLanguageAwarePrintOptions(printOptions: CardLookupPrintOption[], language: string): CardLookupPrintOption[] {
+  if (!printOptions.length) {
+    return [];
+  }
+
+  const groupedOptions = new Map<string, CardLookupPrintOption[]>();
+  for (const option of printOptions) {
+    const key = [normalizeSetGroupKey(option), trimValue(option.rarity), trimValue(option.card_number)].join('||');
+    const existing = groupedOptions.get(key);
+    if (existing) {
+      existing.push(option);
+      continue;
+    }
+    groupedOptions.set(key, [option]);
+  }
+
+  const sourceOptions = Array.from(groupedOptions.values()).map((options) => {
+    const matchingOption = options.find((option) => matchesPrintOptionLanguage(option, language));
+    return matchingOption ?? translatePrintOptionLanguage(options[0], language);
+  });
+  const seen = new Set<string>();
+
+  return sourceOptions.filter((option) => {
+    const key = [trimValue(option.set_name), trimValue(option.set_code), trimValue(option.rarity), trimValue(option.card_number)].join('||');
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 const defaultPayload: CardPayload = {
   name: '',
   language: 'de',
@@ -253,7 +434,70 @@ export default function CardFormDialog({
 
   const updateForm = (patch: Partial<CardPayload>) => setForm((current) => ({ ...current, ...patch }));
 
-  const printOptions = lookupData?.print_options ?? [];
+  const clearLookupResult = (nextName?: string) => {
+    setLookupData(null);
+    setLookupError(null);
+    setYgoprodeckId('');
+    setCardmarketUrl('');
+    setLastImportedCardmarketUrl('');
+    setForm((current) => {
+      const nextExternalIds = { ...(current.external_ids || {}) };
+      delete nextExternalIds.ygoprodeck;
+      delete nextExternalIds.cardmarket;
+      return {
+        ...current,
+        name: nextName ?? current.name,
+        set_name: undefined,
+        set_code: undefined,
+        card_number: undefined,
+        rarity: undefined,
+        rarity_code: undefined,
+        current_market_price: undefined,
+        cardmarket_reference: undefined,
+        cardmarket_product_url: undefined,
+        cardmarket_product_slug: undefined,
+        cardmarket_set_slug: undefined,
+        cardmarket_set_name: undefined,
+        cardmarket_product_name: undefined,
+        cardmarket_variant_name: undefined,
+        cardmarket_category: undefined,
+        cardmarket_match_quality: undefined,
+        cardmarket_verified_at: undefined,
+        cardmarket_expected_rarity: undefined,
+        cardmarket_expected_set_name: undefined,
+        effect_text: undefined,
+        card_type: undefined,
+        subtype: undefined,
+        attribute: undefined,
+        monster_type: undefined,
+        archetype: undefined,
+        atk: undefined,
+        defense: undefined,
+        level: undefined,
+        rank: undefined,
+        link_rating: undefined,
+        link_arrows: [],
+        pendulum_scale: undefined,
+        pendulum_effect: undefined,
+        spell_trap_type: undefined,
+        external_ids: nextExternalIds,
+      };
+    });
+  };
+
+  const searchLanguageQuery = useMemo(
+    () => buildSearchLanguageQuery(settings.preferred_search_language, form.language || settings.preferred_card_language || defaultPayload.language),
+    [form.language, settings.preferred_card_language, settings.preferred_search_language],
+  );
+  const searchLanguageLabel = useMemo(
+    () => parseLanguageList(searchLanguageQuery, []).map((value) => value.toUpperCase()).join(', '),
+    [searchLanguageQuery],
+  );
+
+  const printOptions = useMemo(
+    () => getLanguageAwarePrintOptions(lookupData?.print_options ?? [], form.language),
+    [form.language, lookupData?.print_options],
+  );
   const selection = useMemo<LookupSelection>(
     () => ({
       set_name: form.set_name,
@@ -262,28 +506,30 @@ export default function CardFormDialog({
     }),
     [form.rarity, form.set_code, form.set_name],
   );
-
-  const setNameOptions = useMemo(
-    () => uniqueValues(filterPrintOptions(printOptions, selection, 'set_name').map((option) => option.set_name)),
-    [printOptions, selection],
+  const setGroupOptions = useMemo(() => buildSetGroupOptions(printOptions), [printOptions]);
+  const selectedSetGroupKey = useMemo(
+    () => (selection.set_name || selection.set_code ? normalizeSetGroupKey({ set_name: selection.set_name, set_code: selection.set_code }) : ''),
+    [selection.set_code, selection.set_name],
   );
-  const setCodeOptions = useMemo(
-    () => uniqueValues(filterPrintOptions(printOptions, selection, 'set_code').map((option) => option.set_code)),
-    [printOptions, selection],
+  const selectedSetGroup = useMemo(
+    () => setGroupOptions.find((option) => option.key === selectedSetGroupKey) ?? null,
+    [selectedSetGroupKey, setGroupOptions],
   );
-  const rarityOptions = useMemo(
-    () => uniqueValues(filterPrintOptions(printOptions, selection, 'rarity').map((option) => option.rarity)),
-    [printOptions, selection],
-  );
+  const variantOptions = useMemo(() => selectedSetGroup?.options ?? [], [selectedSetGroup]);
   const resolvedPrint = useMemo(
     () => resolveSelectedPrint(printOptions, selection),
     [printOptions, selection],
   );
+  const selectedVariantKey = useMemo(() => (resolvedPrint ? buildVariantKey(resolvedPrint) : ''), [resolvedPrint]);
 
   const needsDisambiguation = Boolean(lookupData && printOptions.length > 1 && !resolvedPrint);
-  const highlightSetName = needsDisambiguation && !form.set_name && setNameOptions.length > 1;
-  const highlightSetCode = needsDisambiguation && !form.set_code && setCodeOptions.length > 1;
-  const highlightRarity = needsDisambiguation && !form.rarity && rarityOptions.length > 1;
+  const needsSetSelection = Boolean(lookupData && setGroupOptions.length > 1 && !selectedSetGroup);
+  const needsVariantSelection = Boolean(lookupData && selectedSetGroup && variantOptions.length > 1 && !resolvedPrint);
+  const showInventoryFields = !lookupData || Boolean(resolvedPrint);
+  const setCodeLanguageError = useMemo(
+    () => validateSetCodeLanguage(form.language, form.set_code),
+    [form.language, form.set_code],
+  );
 
   const marketPriceHelperText = useMemo(() => {
     const messages: string[] = [];
@@ -298,41 +544,65 @@ export default function CardFormDialog({
     return messages.join(' ');
   }, [form.condition, lookupData, resolvedPrint]);
 
-  const applyLookupPayload = (lookup: CardLookupResponse, selectionPatch: LookupSelection = {}) => {
+  const applyLookupPayload = (lookup: CardLookupResponse, selectionPatch: LookupSelection = {}, languageOverride?: string) => {
     setLookupData(lookup);
     setLookupError(null);
     setYgoprodeckId(lookup.ygoprodeck_id || '');
     setForm((current) => {
-      const nextSelection = sanitizeSelection(lookup.print_options, {
+      const targetLanguage = (languageOverride || current.language || form.language || settings.preferred_card_language || defaultPayload.language).trim().toLowerCase();
+      const languageAwarePrintOptions = getLanguageAwarePrintOptions(lookup.print_options, targetLanguage);
+      const requestedSetCode =
+        selectionPatch.set_code !== undefined
+          ? trimValue(selectionPatch.set_code)
+          : validateSetCodeLanguage(targetLanguage, current.set_code)
+            ? buildSetCodeForLanguage(current.set_code, targetLanguage)
+            : trimValue(current.set_code);
+
+      let nextSelection = sanitizeSelection(languageAwarePrintOptions, {
         set_name: selectionPatch.set_name !== undefined ? selectionPatch.set_name : current.set_name,
-        set_code: selectionPatch.set_code !== undefined ? selectionPatch.set_code : current.set_code,
+        set_code: requestedSetCode,
         rarity: selectionPatch.rarity !== undefined ? selectionPatch.rarity : current.rarity,
       });
-      const nextPrint = resolveSelectedPrint(lookup.print_options, nextSelection);
+      let nextPrint = resolveSelectedPrint(languageAwarePrintOptions, nextSelection);
+
+      if (!nextPrint && languageAwarePrintOptions.length === 1) {
+        nextPrint = languageAwarePrintOptions[0];
+        nextSelection = {
+          set_name: nextPrint.set_name ?? undefined,
+          set_code: nextPrint.set_code ?? undefined,
+          rarity: nextPrint.rarity ?? undefined,
+        };
+      }
+
+      const exactCardmarketReference =
+        nextPrint?.cardmarket_product_url ??
+        nextPrint?.cardmarket_reference ??
+        (languageAwarePrintOptions.length === 1 ? lookup.cardmarket_product_url ?? lookup.cardmarket_reference ?? undefined : undefined);
 
       return {
         ...current,
+        language: targetLanguage,
         name: lookup.name,
-        set_name: nextSelection.set_name ?? undefined,
-        set_code: nextSelection.set_code ?? undefined,
+        set_name: nextPrint?.set_name ?? nextSelection.set_name ?? undefined,
+        set_code: nextPrint?.set_code ?? nextSelection.set_code ?? requestedSetCode ?? undefined,
         card_number: nextPrint?.card_number ?? undefined,
-        rarity: nextSelection.rarity ?? undefined,
+        rarity: nextPrint?.rarity ?? nextSelection.rarity ?? undefined,
         rarity_code: nextPrint?.rarity_code ?? undefined,
         current_market_price: nextPrint?.market_price ?? lookup.default_market_price ?? undefined,
         current_price_currency: nextPrint?.price_currency ?? lookup.default_price_currency ?? current.current_price_currency ?? 'EUR',
-        cardmarket_reference: nextPrint?.cardmarket_product_url ?? nextPrint?.cardmarket_reference ?? lookup.cardmarket_product_url ?? lookup.cardmarket_reference ?? undefined,
-        cardmarket_product_url: nextPrint?.cardmarket_product_url ?? lookup.cardmarket_product_url ?? undefined,
-        cardmarket_product_slug: nextPrint?.cardmarket_product_slug ?? lookup.cardmarket_product_slug ?? undefined,
-        cardmarket_set_slug: nextPrint?.cardmarket_set_slug ?? lookup.cardmarket_set_slug ?? undefined,
-        cardmarket_set_name: nextPrint?.cardmarket_set_name ?? lookup.cardmarket_set_name ?? undefined,
-        cardmarket_product_name: nextPrint?.cardmarket_product_name ?? lookup.cardmarket_product_name ?? undefined,
-        cardmarket_variant_name: nextPrint?.cardmarket_variant_name ?? lookup.cardmarket_variant_name ?? undefined,
-        cardmarket_category: nextPrint?.cardmarket_category ?? lookup.cardmarket_category ?? undefined,
-        cardmarket_match_quality: nextPrint?.cardmarket_match_quality ?? lookup.cardmarket_match_quality ?? undefined,
-        cardmarket_verified_at: nextPrint?.cardmarket_verified_at ?? lookup.cardmarket_verified_at ?? undefined,
-        cardmarket_expected_rarity: nextPrint?.rarity ?? current.cardmarket_expected_rarity ?? undefined,
-        cardmarket_expected_language: current.cardmarket_expected_language ?? current.language ?? undefined,
-        cardmarket_expected_set_name: nextPrint?.set_name ?? lookup.cardmarket_set_name ?? current.cardmarket_expected_set_name ?? undefined,
+        cardmarket_reference: exactCardmarketReference,
+        cardmarket_product_url: nextPrint?.cardmarket_product_url ?? (languageAwarePrintOptions.length === 1 ? lookup.cardmarket_product_url ?? undefined : undefined),
+        cardmarket_product_slug: nextPrint?.cardmarket_product_slug ?? (languageAwarePrintOptions.length === 1 ? lookup.cardmarket_product_slug ?? undefined : undefined),
+        cardmarket_set_slug: nextPrint?.cardmarket_set_slug ?? undefined,
+        cardmarket_set_name: nextPrint?.cardmarket_set_name ?? nextSelection.set_name ?? lookup.cardmarket_set_name ?? undefined,
+        cardmarket_product_name: nextPrint?.cardmarket_product_name ?? lookup.cardmarket_product_name ?? lookup.name,
+        cardmarket_variant_name: nextPrint?.cardmarket_variant_name ?? undefined,
+        cardmarket_category: nextPrint?.cardmarket_category ?? (languageAwarePrintOptions.length === 1 ? lookup.cardmarket_category ?? undefined : undefined),
+        cardmarket_match_quality: nextPrint?.cardmarket_match_quality ?? (languageAwarePrintOptions.length === 1 ? lookup.cardmarket_match_quality ?? undefined : undefined),
+        cardmarket_verified_at: nextPrint?.cardmarket_verified_at ?? (languageAwarePrintOptions.length === 1 ? lookup.cardmarket_verified_at ?? undefined : undefined),
+        cardmarket_expected_rarity: nextPrint?.rarity ?? nextSelection.rarity ?? undefined,
+        cardmarket_expected_language: targetLanguage,
+        cardmarket_expected_set_name: nextPrint?.set_name ?? nextSelection.set_name ?? lookup.cardmarket_set_name ?? undefined,
         effect_text: lookup.effect_text,
         card_type: lookup.card_type,
         subtype: lookup.subtype,
@@ -351,7 +621,7 @@ export default function CardFormDialog({
         external_ids: {
           ...current.external_ids,
           ...(lookup.ygoprodeck_id ? { ygoprodeck: lookup.ygoprodeck_id } : {}),
-          ...(lookup.cardmarket_product_url || lookup.cardmarket_reference ? { cardmarket: lookup.cardmarket_product_url || lookup.cardmarket_reference } : {}),
+          ...(exactCardmarketReference ? { cardmarket: exactCardmarketReference } : {}),
         },
       };
     });
@@ -360,13 +630,17 @@ export default function CardFormDialog({
   const loadLookup = async (params: { external_id?: string; name?: string }, languageOverride?: string) => {
     setLookupLoading(true);
     try {
+      const lookupLanguageQuery = buildSearchLanguageQuery(
+        settings.preferred_search_language,
+        languageOverride || form.language || settings.preferred_card_language || defaultPayload.language,
+      );
       const response = await api.get<CardLookupResponse>('/cards/lookup/autofill', {
         params: {
           ...params,
-          language: languageOverride || form.language || settings.preferred_price_language,
+          language: lookupLanguageQuery,
         },
       });
-      applyLookupPayload(response.data);
+      applyLookupPayload(response.data, {}, languageOverride);
     } catch (requestError) {
       setLookupError(getApiErrorMessage(requestError));
     } finally {
@@ -377,13 +651,17 @@ export default function CardFormDialog({
   const loadCardmarketLink = async (url: string, languageOverride?: string) => {
     setCardmarketLoading(true);
     try {
+      const lookupLanguageQuery = buildSearchLanguageQuery(
+        settings.preferred_search_language,
+        languageOverride || form.language || settings.preferred_card_language || defaultPayload.language,
+      );
       const response = await api.get<CardLookupResponse>('/cards/lookup/cardmarket-link', {
         params: {
           url,
-          language: languageOverride || form.language || settings.preferred_price_language,
+          language: lookupLanguageQuery,
         },
       });
-      applyLookupPayload(response.data);
+      applyLookupPayload(response.data, {}, languageOverride);
       setCardmarketUrl(response.data.cardmarket_product_url || response.data.cardmarket_reference || url.trim());
       setLastImportedCardmarketUrl(response.data.cardmarket_product_url || response.data.cardmarket_reference || url.trim());
       if (response.data.ygoprodeck_id) {
@@ -428,10 +706,10 @@ export default function CardFormDialog({
     const loadSuggestions = async () => {
       setSearchLoading(true);
       try {
-        const response = await api.get<CardLookupSuggestion[]>('/cards/lookup/search', {
+          const response = await api.get<CardLookupSuggestion[]>('/cards/lookup/search', {
           params: {
             q: query,
-            language: settings.preferred_search_language || form.language,
+            language: searchLanguageQuery,
             limit: 8,
           },
         });
@@ -460,7 +738,7 @@ export default function CardFormDialog({
     return () => {
       active = false;
     };
-  }, [debouncedSearchTerm, form.language, open, selectedSuggestion, settings.preferred_search_language]);
+  }, [debouncedSearchTerm, open, searchLanguageQuery, selectedSuggestion]);
 
   useEffect(() => {
     if (!open) {
@@ -497,7 +775,28 @@ export default function CardFormDialog({
     setCardmarketUrl(resolvedUrl);
   }, [cardmarketUrl, lastImportedCardmarketUrl, lookupData, open, resolvedPrint]);
 
+  useEffect(() => {
+    if (!open || !lookupData || resolvedPrint || selectedSetGroup || setGroupOptions.length !== 1) {
+      return;
+    }
+
+    const onlySet = setGroupOptions[0];
+    const primaryOption = onlySet.options[0];
+    if (!primaryOption) {
+      return;
+    }
+
+    applyLookupPayload(lookupData, {
+      set_name: primaryOption.set_name || '',
+      set_code: primaryOption.set_code || '',
+      rarity: onlySet.options.length === 1 ? primaryOption.rarity || '' : '',
+    });
+  }, [lookupData, open, resolvedPrint, selectedSetGroup, setGroupOptions]);
+
   const handleSubmit = async () => {
+    if (setCodeLanguageError) {
+      return;
+    }
     await onSubmit({
       ...form,
       quantity: Number(form.quantity) || 1,
@@ -528,25 +827,59 @@ export default function CardFormDialog({
     });
   };
 
-  const handleLookupSelectionChange = (field: keyof LookupSelection, value: string) => {
-    if (!value) {
+  const handleSetGroupChange = (groupKey: string) => {
+    if (!lookupData) {
+      return;
+    }
+
+    if (!groupKey) {
       updateForm({
         set_name: undefined,
         set_code: undefined,
         card_number: undefined,
         rarity: undefined,
         rarity_code: undefined,
-        current_market_price: undefined,
+        current_market_price: lookupData.default_market_price ?? undefined,
+        cardmarket_reference: undefined,
+        cardmarket_product_url: undefined,
+        cardmarket_product_slug: undefined,
+        cardmarket_set_slug: undefined,
+        cardmarket_variant_name: undefined,
       });
       return;
     }
 
-    if (!lookupData) {
-      updateForm({ [field]: value || undefined } as Partial<CardPayload>);
+    const nextGroup = setGroupOptions.find((option) => option.key === groupKey);
+    const primaryOption = nextGroup?.options[0];
+    if (!nextGroup || !primaryOption) {
       return;
     }
-    applyLookupPayload(lookupData, { [field]: value || undefined });
+
+    applyLookupPayload(lookupData, {
+      set_name: primaryOption.set_name || '',
+      set_code: primaryOption.set_code || '',
+      rarity: nextGroup.options.length === 1 ? primaryOption.rarity || '' : '',
+    });
   };
+
+  const handleVariantChange = (variantKey: string) => {
+    if (!lookupData || !selectedSetGroup) {
+      return;
+    }
+
+    const nextVariant = variantOptions.find((option) => buildVariantKey(option) === variantKey);
+    if (!nextVariant) {
+      return;
+    }
+
+    applyLookupPayload(lookupData, {
+      set_name: nextVariant.set_name || '',
+      set_code: nextVariant.set_code || '',
+      rarity: nextVariant.rarity || '',
+    });
+  };
+
+  const submitDisabled = loading || !form.name.trim() || Boolean(setCodeLanguageError) || Boolean(lookupData && printOptions.length > 1 && !resolvedPrint);
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth fullScreen={fullScreen} maxWidth="md">
@@ -557,14 +890,17 @@ export default function CardFormDialog({
 
           {needsDisambiguation ? (
             <Alert severity="warning">
-              Mehrere Druckvarianten gefunden. Die orange markierten Auswahlfelder brauchen noch eine Auswahl, damit Preis und Referenzen sauber
-              zugeordnet werden koennen.
+              {needsSetSelection
+                ? 'Karte erkannt. Bitte jetzt zuerst das richtige Set waehlen.'
+                : 'Das Set ist erkannt. Bitte jetzt noch die richtige Variante waehlen, bevor Sprache und Bestand gespeichert werden.'}
             </Alert>
           ) : null}
 
-          {lookupData && resolvedPrint ? (
+          {lookupData ? (
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-              <Chip color="success" variant="outlined" label={`Erkannter Druck: ${resolvedPrint.display_label}`} />
+              <Chip color="primary" variant="outlined" label={`Karte: ${lookupData.name}`} />
+              {selectedSetGroup ? <Chip variant="outlined" label={`Set: ${selectedSetGroup.label}`} /> : null}
+              {resolvedPrint ? <Chip color="success" variant="outlined" label={`Variante: ${buildVariantLabel(resolvedPrint)}`} /> : null}
               {lookupData.image_url ? (
                 <Chip
                   variant="outlined"
@@ -593,7 +929,7 @@ export default function CardFormDialog({
               />
             </Grid>
 
-            <Grid item xs={12} md={6}>
+            <Grid item xs={12}>
               <Autocomplete<CardLookupSuggestion, false, false, true>
                 freeSolo
                 options={suggestions}
@@ -606,28 +942,22 @@ export default function CardFormDialog({
                 isOptionEqualToValue={(option, value) => typeof value !== 'string' && option.external_id === value.external_id}
                 getOptionLabel={(option) => (typeof option === 'string' ? option : option.name)}
                 onInputChange={(_, value, reason) => {
-                  updateForm({ name: value });
                   if ((reason === 'input' || reason === 'clear') && selectedSuggestion && value.trim() !== selectedSuggestion.name.trim()) {
                     setSelectedSuggestion(null);
-                    setLookupData(null);
-                    setLookupError(null);
-                    setYgoprodeckId('');
+                    clearLookupResult(value);
+                    return;
                   }
+                  updateForm({ name: value });
                 }}
                 onChange={(_, option) => {
                   if (typeof option === 'string') {
                     setSelectedSuggestion(null);
-                    setLookupData(null);
-                    setLookupError(null);
-                    setYgoprodeckId('');
-                    updateForm({ name: option });
+                    clearLookupResult(option);
                     return;
                   }
                   setSelectedSuggestion(option);
                   if (!option) {
-                    setLookupData(null);
-                    setLookupError(null);
-                    setYgoprodeckId('');
+                    clearLookupResult(form.name);
                     return;
                   }
                   void loadLookup({ external_id: option.external_id });
@@ -660,8 +990,8 @@ export default function CardFormDialog({
                     label="Kartenname"
                     helperText={
                       lookupData
-                        ? 'Karte erkannt. Bei mehreren Drucken bitte Set, Setcode oder Seltenheit unten festlegen.'
-                        : 'Tippe einen Namen ein und waehle einen Vorschlag aus, damit Kartendaten und IDs uebernommen werden.'
+                        ? 'Karte erkannt. Jetzt Set und bei Bedarf die genaue Variante waehlen.'
+                        : `Suche immer gleichzeitig in ${searchLanguageLabel || 'DE, EN'}. Danach waehlen wir Set und Variante.`
                     }
                     InputProps={{
                       ...params.InputProps,
@@ -677,231 +1007,212 @@ export default function CardFormDialog({
               />
             </Grid>
 
-            <Grid item xs={12} md={3}>
-              <TextField
-                select
-                label="Sprache"
-                fullWidth
-                value={form.language}
-                onChange={(event) => {
-                  const nextLanguage = event.target.value;
-                  updateForm({ language: nextLanguage });
-                  if (isCardmarketUrl(cardmarketUrl)) {
-                    void loadCardmarketLink(cardmarketUrl, nextLanguage);
-                  } else if (lookupData?.ygoprodeck_id) {
-                    void loadLookup({ external_id: lookupData.ygoprodeck_id }, nextLanguage);
-                  }
-                }}
-              >
-                <MenuItem value="de">Deutsch</MenuItem>
-                <MenuItem value="en">Englisch</MenuItem>
-                <MenuItem value="jp">Japanisch</MenuItem>
-              </TextField>
-            </Grid>
+            {lookupData ? (
+              <>
+                <Grid item xs={12}>
+                  <Autocomplete<SetGroupOption, false, false, false>
+                    options={setGroupOptions}
+                    value={selectedSetGroup}
+                    onChange={(_, option) => handleSetGroupChange(option?.key || '')}
+                    isOptionEqualToValue={(option, value) => option.key === value.key}
+                    getOptionLabel={(option) => option.label}
+                    filterOptions={(options, state) => {
+                      const normalizedInput = normalizeAutocompleteText(state.inputValue);
+                      if (!normalizedInput) {
+                        return options;
+                      }
+                      return options.filter((option) => normalizeAutocompleteText(option.label).includes(normalizedInput));
+                    }}
+                    autoHighlight
+                    clearOnBlur={false}
+                    noOptionsText="Kein passendes Set gefunden"
+                    ListboxProps={{ style: { maxHeight: 360 } }}
+                    renderOption={(props, option) => (
+                      <Box component="li" {...props}>
+                        <Stack direction="row" justifyContent="space-between" width="100%" spacing={2}>
+                          <Typography>{option.label}</Typography>
+                          {option.options.length > 1 ? (
+                            <Typography variant="body2" color="text.secondary">
+                              {option.options.length} Varianten
+                            </Typography>
+                          ) : null}
+                        </Stack>
+                      </Box>
+                    )}
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        label="Set"
+                        fullWidth
+                        color={needsSetSelection ? 'warning' : 'primary'}
+                        helperText={
+                          needsSetSelection
+                            ? 'Bitte das richtige Set auswaehlen. Du kannst auch direkt im Feld tippen.'
+                            : selectedSetGroup && variantOptions.length > 1
+                              ? `${variantOptions.length} Varianten in diesem Set verfuegbar.`
+                              : 'Set wurde erkannt.'
+                        }
+                      />
+                    )}
+                  />
+                </Grid>
 
-            <Grid item xs={12} md={3}>
-              <TextField select label="Zustand" fullWidth value={form.condition} onChange={(event) => updateForm({ condition: event.target.value })}>
-                <MenuItem value="near_mint">Near Mint</MenuItem>
-                <MenuItem value="excellent">Excellent</MenuItem>
-                <MenuItem value="good">Good</MenuItem>
-                <MenuItem value="played">Played</MenuItem>
-                <MenuItem value="poor">Poor</MenuItem>
-              </TextField>
-            </Grid>
+                {selectedSetGroup && variantOptions.length > 1 ? (
+                  <Grid item xs={12}>
+                    <TextField
+                      select
+                      label="Variante"
+                      fullWidth
+                      color={needsVariantSelection ? 'warning' : 'primary'}
+                      value={selectedVariantKey}
+                      onChange={(event) => handleVariantChange(event.target.value)}
+                      helperText="Bitte die genaue Variante innerhalb des Sets waehlen."
+                    >
+                      <MenuItem value="">Bitte Variante auswaehlen</MenuItem>
+                      {variantOptions.map((option) => (
+                        <MenuItem key={buildVariantKey(option)} value={buildVariantKey(option)}>
+                          {buildVariantLabel(option)}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                  </Grid>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Grid item xs={12} md={6}>
+                  <TextField label="Setname" fullWidth value={form.set_name || ''} onChange={(event) => updateForm({ set_name: event.target.value })} />
+                </Grid>
 
-            <Grid item xs={12} md={6}>
-              {lookupData && setNameOptions.length ? (
-                <TextField
-                  select
-                  label="Setname"
-                  fullWidth
-                  color={highlightSetName ? 'warning' : 'primary'}
-                  value={form.set_name || ''}
-                  onChange={(event) => handleLookupSelectionChange('set_name', event.target.value)}
-                  helperText={highlightSetName ? 'Mehrere Setnamen verfuegbar' : undefined}
-                >
-                  <MenuItem value="">Noch offen</MenuItem>
-                  {setNameOptions.map((option) => (
-                    <MenuItem key={option} value={option}>
-                      {option}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              ) : (
-                <TextField label="Setname" fullWidth value={form.set_name || ''} onChange={(event) => updateForm({ set_name: event.target.value })} />
-              )}
-            </Grid>
+                <Grid item xs={12} md={3}>
+                  <TextField
+                    label="Setcode"
+                    fullWidth
+                    error={Boolean(setCodeLanguageError)}
+                    helperText={setCodeLanguageError || undefined}
+                    value={form.set_code || ''}
+                    onChange={(event) => updateForm({ set_code: event.target.value })}
+                  />
+                </Grid>
 
-            <Grid item xs={12} md={3}>
-              {lookupData && setCodeOptions.length ? (
-                <TextField
-                  select
-                  label="Setcode"
-                  fullWidth
-                  color={highlightSetCode ? 'warning' : 'primary'}
-                  value={form.set_code || ''}
-                  onChange={(event) => handleLookupSelectionChange('set_code', event.target.value)}
-                  helperText={highlightSetCode ? 'Mehrere Setcodes verfuegbar' : undefined}
-                >
-                  <MenuItem value="">Noch offen</MenuItem>
-                  {setCodeOptions.map((option) => (
-                    <MenuItem key={option} value={option}>
-                      {option}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              ) : (
-                <TextField label="Setcode" fullWidth value={form.set_code || ''} onChange={(event) => updateForm({ set_code: event.target.value })} />
-              )}
-            </Grid>
+                <Grid item xs={12} md={3}>
+                  <TextField label="Seltenheit" fullWidth value={form.rarity || ''} onChange={(event) => updateForm({ rarity: event.target.value })} />
+                </Grid>
+              </>
+            )}
 
-            <Grid item xs={12} md={3}>
-              <TextField label="Kartennummer" fullWidth value={form.card_number || ''} onChange={(event) => updateForm({ card_number: event.target.value })} />
-            </Grid>
+            {showInventoryFields ? (
+              <>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    select
+                    label="Sprache"
+                    fullWidth
+                    value={form.language}
+                    onChange={(event) => {
+                      const nextLanguage = event.target.value;
+                      if (lookupData) {
+                        applyLookupPayload(lookupData, {}, nextLanguage);
+                      } else {
+                        updateForm({
+                          language: nextLanguage,
+                          set_code: buildSetCodeForLanguage(form.set_code, nextLanguage) || form.set_code,
+                          cardmarket_expected_language: nextLanguage,
+                        });
+                      }
+                      if (isCardmarketUrl(cardmarketUrl)) {
+                        void loadCardmarketLink(cardmarketUrl, nextLanguage);
+                      } else if (lookupData?.ygoprodeck_id) {
+                        void loadLookup({ external_id: lookupData.ygoprodeck_id }, nextLanguage);
+                      }
+                    }}
+                  >
+                    <MenuItem value="de">Deutsch</MenuItem>
+                    <MenuItem value="en">Englisch</MenuItem>
+                    <MenuItem value="jp">Japanisch</MenuItem>
+                  </TextField>
+                </Grid>
 
-            <Grid item xs={12} md={4}>
-              {lookupData && rarityOptions.length ? (
-                <TextField
-                  select
-                  label="Seltenheit"
-                  fullWidth
-                  color={highlightRarity ? 'warning' : 'primary'}
-                  value={form.rarity || ''}
-                  onChange={(event) => handleLookupSelectionChange('rarity', event.target.value)}
-                  helperText={highlightRarity ? 'Mehrere Seltenheiten verfuegbar' : undefined}
-                >
-                  <MenuItem value="">Noch offen</MenuItem>
-                  {rarityOptions.map((option) => (
-                    <MenuItem key={option} value={option}>
-                      {option}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              ) : (
-                <TextField label="Seltenheit" fullWidth value={form.rarity || ''} onChange={(event) => updateForm({ rarity: event.target.value })} />
-              )}
-            </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField select label="Zustand" fullWidth value={form.condition} onChange={(event) => updateForm({ condition: event.target.value })}>
+                    <MenuItem value="near_mint">Near Mint</MenuItem>
+                    <MenuItem value="excellent">Excellent</MenuItem>
+                    <MenuItem value="good">Good</MenuItem>
+                    <MenuItem value="played">Played</MenuItem>
+                    <MenuItem value="poor">Poor</MenuItem>
+                  </TextField>
+                </Grid>
 
-            <Grid item xs={12} md={4}>
-              <TextField
-                label="Lagerort"
-                select
-                fullWidth
-                value={form.storage_location_id || ''}
-                onChange={(event) => updateForm({ storage_location_id: event.target.value ? Number(event.target.value) : undefined })}
-              >
-                <MenuItem value="">Nicht zugewiesen</MenuItem>
-                {storageLocations.map((location) => (
-                  <MenuItem key={location.id} value={location.id}>
-                    {location.path_cache}
-                  </MenuItem>
-                ))}
-              </TextField>
-            </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    label="Lagerort"
+                    select
+                    fullWidth
+                    value={form.storage_location_id || ''}
+                    onChange={(event) => updateForm({ storage_location_id: event.target.value ? Number(event.target.value) : undefined })}
+                  >
+                    <MenuItem value="">Nicht zugewiesen</MenuItem>
+                    {storageLocations.map((location) => (
+                      <MenuItem key={location.id} value={location.id}>
+                        {location.path_cache}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
 
-            <Grid item xs={12} md={4}>
-              <TextField label="Menge" type="number" fullWidth value={form.quantity} onChange={(event) => updateForm({ quantity: Number(event.target.value) })} />
-            </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    label={lookupData ? 'Gespeicherter Setcode' : 'Setcode'}
+                    fullWidth
+                    error={Boolean(setCodeLanguageError)}
+                    helperText={
+                      setCodeLanguageError ||
+                      (lookupData ? 'Wird passend zur gewaehlten Sprache automatisch umgeschrieben, z. B. DE-001 statt EN-001.' : undefined)
+                    }
+                    value={form.set_code || ''}
+                    onChange={(event) => updateForm({ set_code: event.target.value })}
+                    InputProps={lookupData ? { readOnly: true } : undefined}
+                  />
+                </Grid>
 
-            <Grid item xs={12} md={4}>
-              <TextField
-                label="Einkaufspreis"
-                type="number"
-                fullWidth
-                value={form.purchase_price ?? ''}
-                onChange={(event) => updateForm({ purchase_price: event.target.value ? Number(event.target.value) : undefined })}
-              />
-            </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField label="Menge" type="number" fullWidth value={form.quantity} onChange={(event) => updateForm({ quantity: Number(event.target.value) })} />
+                </Grid>
 
-            <Grid item xs={12} md={4}>
-              <TextField
-                label="Marktpreis"
-                type="number"
-                fullWidth
-                color={needsDisambiguation ? 'warning' : 'primary'}
-                value={form.current_market_price ?? ''}
-                onChange={(event) => updateForm({ current_market_price: event.target.value ? Number(event.target.value) : undefined })}
-                helperText={marketPriceHelperText || undefined}
-              />
-            </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    label="Einkaufspreis"
+                    type="number"
+                    fullWidth
+                    value={form.purchase_price ?? ''}
+                    onChange={(event) => updateForm({ purchase_price: event.target.value ? Number(event.target.value) : undefined })}
+                  />
+                </Grid>
 
-            <Grid item xs={12} md={4}>
-              <TextField label="Waehrung" fullWidth value={form.current_price_currency} onChange={(event) => updateForm({ current_price_currency: event.target.value })} />
-            </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    label="Marktpreis"
+                    type="number"
+                    fullWidth
+                    value={form.current_market_price ?? ''}
+                    onChange={(event) => updateForm({ current_market_price: event.target.value ? Number(event.target.value) : undefined })}
+                    helperText={marketPriceHelperText || undefined}
+                  />
+                </Grid>
 
-            <Grid item xs={12} md={6}>
-              <TextField
-                label="Cardmarket-Referenz"
-                fullWidth
-                color={lookupData && !form.cardmarket_reference ? 'warning' : 'primary'}
-                value={form.cardmarket_reference || ''}
-                onChange={(event) => updateForm({ cardmarket_reference: event.target.value })}
-                helperText={
-                  lookupData
-                    ? form.cardmarket_reference
-                      ? 'Best-effort aus vorhandenen lokalen Mappings uebernommen.'
-                      : 'Ohne offizielles Cardmarket-Mapping konnte keine Referenz automatisch gesetzt werden.'
-                    : undefined
-                }
-              />
-            </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField label="Waehrung" fullWidth value={form.current_price_currency} onChange={(event) => updateForm({ current_price_currency: event.target.value })} />
+                </Grid>
 
-            <Grid item xs={12} md={6}>
-              <TextField
-                label="YGOPRODeck-ID"
-                fullWidth
-                value={ygoprodeckId}
-                onChange={(event) => setYgoprodeckId(event.target.value)}
-                helperText={lookupData ? 'Wird nach erfolgreicher Kartenerkennung automatisch uebernommen.' : undefined}
-              />
-            </Grid>
+                <Grid item xs={12}>
+                  <TextField label="Tags (kommagetrennt)" fullWidth value={tagText} onChange={(event) => setTagText(event.target.value)} />
+                </Grid>
 
-            <Grid item xs={12} md={4}>
-              <TextField label="Kartentyp" fullWidth value={form.card_type || ''} onChange={(event) => updateForm({ card_type: event.target.value })} />
-            </Grid>
-
-            <Grid item xs={12} md={4}>
-              <TextField label="Attribut" fullWidth value={form.attribute || ''} onChange={(event) => updateForm({ attribute: event.target.value })} />
-            </Grid>
-
-            <Grid item xs={12} md={4}>
-              <TextField label="Monster-Typ" fullWidth value={form.monster_type || ''} onChange={(event) => updateForm({ monster_type: event.target.value })} />
-            </Grid>
-
-            <Grid item xs={12} md={3}>
-              <TextField label="ATK" type="number" fullWidth value={form.atk ?? ''} onChange={(event) => updateForm({ atk: event.target.value ? Number(event.target.value) : undefined })} />
-            </Grid>
-
-            <Grid item xs={12} md={3}>
-              <TextField label="DEF" type="number" fullWidth value={form.defense ?? ''} onChange={(event) => updateForm({ defense: event.target.value ? Number(event.target.value) : undefined })} />
-            </Grid>
-
-            <Grid item xs={12} md={3}>
-              <TextField label="Level" type="number" fullWidth value={form.level ?? ''} onChange={(event) => updateForm({ level: event.target.value ? Number(event.target.value) : undefined })} />
-            </Grid>
-
-            <Grid item xs={12} md={3}>
-              <TextField label="Rank" type="number" fullWidth value={form.rank ?? ''} onChange={(event) => updateForm({ rank: event.target.value ? Number(event.target.value) : undefined })} />
-            </Grid>
-
-            <Grid item xs={12}>
-              <TextField label="Tags (kommagetrennt)" fullWidth value={tagText} onChange={(event) => setTagText(event.target.value)} />
-            </Grid>
-
-            <Grid item xs={12}>
-              <TextField label="Notizen" fullWidth multiline minRows={2} value={form.notes || ''} onChange={(event) => updateForm({ notes: event.target.value })} />
-            </Grid>
-
-            <Grid item xs={12}>
-              <TextField
-                label="Effekttext"
-                fullWidth
-                multiline
-                minRows={4}
-                value={form.effect_text || ''}
-                onChange={(event) => updateForm({ effect_text: event.target.value })}
-              />
-            </Grid>
+                <Grid item xs={12}>
+                  <TextField label="Notizen" fullWidth multiline minRows={2} value={form.notes || ''} onChange={(event) => updateForm({ notes: event.target.value })} />
+                </Grid>
+              </>
+            ) : null}
           </Grid>
         </Stack>
       </DialogContent>
@@ -909,7 +1220,7 @@ export default function CardFormDialog({
         <Button onClick={onClose} disabled={loading}>
           Abbrechen
         </Button>
-        <Button onClick={handleSubmit} variant="contained" disabled={loading || !form.name.trim()}>
+        <Button onClick={handleSubmit} variant="contained" disabled={submitDisabled}>
           Speichern
         </Button>
       </DialogActions>
