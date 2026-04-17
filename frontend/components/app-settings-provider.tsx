@@ -6,7 +6,7 @@ import { AppSettings } from '../lib/types';
 const defaultSettings: AppSettings = {
   preferred_currency: 'EUR',
   preferred_card_language: 'de',
-  preferred_search_language: 'de',
+  preferred_search_language: 'de,en',
   preferred_price_language: 'de',
 };
 
@@ -74,4 +74,3 @@ export function useAppSettings() {
   }
   return context;
 }
-
