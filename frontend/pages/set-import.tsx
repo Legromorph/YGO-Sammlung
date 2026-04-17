@@ -9,6 +9,7 @@ import {
   Avatar,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Divider,
@@ -20,11 +21,13 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  TableSortLabel,
   TextField,
   Typography,
 } from '@mui/material';
 
 import api, { getApiErrorMessage, resolveMediaUrl } from '../lib/api';
+import SyncJobLogDialog from '../components/sync-job-log-dialog';
 import { formatCurrency, formatDate } from '../lib/format';
 import { useAppSettings } from '../components/app-settings-provider';
 import {
@@ -38,6 +41,7 @@ import {
 } from '../lib/types';
 
 type QuantityMap = Record<number, number>;
+type SelectedCardMap = Record<number, true>;
 
 type AllocationPreviewLine = {
   card_print_id: number;
@@ -51,6 +55,24 @@ type AllocationPreview = {
   averageUnitPrice: number | null;
   totalAllocatedPrice: number | null;
   remainderCents: number;
+};
+
+type SortField =
+  | 'name'
+  | 'card_number'
+  | 'rarity'
+  | 'existing_quantity'
+  | 'current_market_price'
+  | 'selectedQuantity'
+  | 'allocatedPurchaseTotal'
+  | 'allocatedUnitPrice';
+
+type SortDirection = 'asc' | 'desc';
+
+type DisplaySetCardRow = SetCardRow & {
+  selectedQuantity: number;
+  allocatedPurchaseTotal: number | null;
+  allocatedUnitPrice: number | null;
 };
 
 function normalizeQuantity(value: string): number {
@@ -131,6 +153,39 @@ function allocateDisplayTotal(displayTotalPrice: number | null, rows: Array<{ ca
   };
 }
 
+function compareNullableNumbers(left: number | null | undefined, right: number | null | undefined): number {
+  const normalizedLeft = left ?? Number.NEGATIVE_INFINITY;
+  const normalizedRight = right ?? Number.NEGATIVE_INFINITY;
+  return normalizedLeft - normalizedRight;
+}
+
+function compareNullableText(left: string | null | undefined, right: string | null | undefined): number {
+  return (left || '').localeCompare(right || '', undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function compareCardRows(left: DisplaySetCardRow, right: DisplaySetCardRow, field: SortField): number {
+  switch (field) {
+    case 'name':
+      return compareNullableText(left.name, right.name);
+    case 'card_number':
+      return compareNullableText(left.card_number, right.card_number);
+    case 'rarity':
+      return compareNullableText(left.rarity, right.rarity);
+    case 'existing_quantity':
+      return left.existing_quantity - right.existing_quantity;
+    case 'current_market_price':
+      return compareNullableNumbers(left.current_market_price, right.current_market_price);
+    case 'selectedQuantity':
+      return left.selectedQuantity - right.selectedQuantity;
+    case 'allocatedPurchaseTotal':
+      return compareNullableNumbers(left.allocatedPurchaseTotal, right.allocatedPurchaseTotal);
+    case 'allocatedUnitPrice':
+      return compareNullableNumbers(left.allocatedUnitPrice, right.allocatedUnitPrice);
+    default:
+      return 0;
+  }
+}
+
 export default function SetImportPage() {
   const { settings } = useAppSettings();
   const [setOptions, setSetOptions] = useState<CardSetSummary[]>([]);
@@ -138,6 +193,7 @@ export default function SetImportPage() {
   const [selectedSet, setSelectedSet] = useState<CardSetSummary | null>(null);
   const [setCards, setSetCards] = useState<SetCardRow[]>([]);
   const [quantities, setQuantities] = useState<QuantityMap>({});
+  const [selectedCards, setSelectedCards] = useState<SelectedCardMap>({});
   const [storageLocations, setStorageLocations] = useState<StorageLocation[]>([]);
   const [displayTotalPrice, setDisplayTotalPrice] = useState('');
   const [storageLocationId, setStorageLocationId] = useState('');
@@ -148,7 +204,10 @@ export default function SetImportPage() {
   const [loadingSets, setLoadingSets] = useState(false);
   const [loadingCards, setLoadingCards] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [sortField, setSortField] = useState<SortField>('card_number');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [priceSyncJob, setPriceSyncJob] = useState<SyncJob | null>(null);
+  const [logJob, setLogJob] = useState<SyncJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -221,10 +280,12 @@ export default function SetImportPage() {
       setSelectedSet(response.data.set);
       setSetCards(response.data.items);
       setQuantities({});
+      setSelectedCards({});
       setError(null);
     } catch (requestError) {
       setSetCards([]);
       setQuantities({});
+      setSelectedCards({});
       setError(getApiErrorMessage(requestError));
     } finally {
       setLoadingCards(false);
@@ -260,17 +321,25 @@ export default function SetImportPage() {
     };
   }, [priceSyncJob, selectedSet]);
 
-  const selectedRows = useMemo(
+  const parsedDisplayTotalPrice = parseMoney(displayTotalPrice);
+  const cardsWithQuantities = useMemo<DisplaySetCardRow[]>(
     () =>
-      setCards
-        .map((card) => ({ ...card, selectedQuantity: quantities[card.card_print_id] || 0 }))
-        .filter((card) => card.selectedQuantity > 0),
+      setCards.map((card) => ({
+        ...card,
+        selectedQuantity: quantities[card.card_print_id] || 0,
+        allocatedPurchaseTotal: null,
+        allocatedUnitPrice: null,
+      })),
     [quantities, setCards],
+  );
+
+  const selectedRows = useMemo(
+    () => cardsWithQuantities.filter((card) => card.selectedQuantity > 0),
+    [cardsWithQuantities],
   );
 
   const selectedLineCount = selectedRows.length;
   const selectedQuantityTotal = selectedRows.reduce((sum, card) => sum + card.selectedQuantity, 0);
-  const parsedDisplayTotalPrice = parseMoney(displayTotalPrice);
   const allocationPreview = useMemo(
     () =>
       allocateDisplayTotal(
@@ -282,6 +351,30 @@ export default function SetImportPage() {
       ),
     [parsedDisplayTotalPrice, selectedRows],
   );
+  const sortedSetCards = useMemo<DisplaySetCardRow[]>(() => {
+    const rows = cardsWithQuantities.map((card) => {
+      const allocationLine = allocationPreview.lines[card.card_print_id];
+      return {
+        ...card,
+        allocatedPurchaseTotal: allocationLine?.allocatedPurchaseTotal ?? null,
+        allocatedUnitPrice: allocationLine?.allocatedUnitPrice ?? null,
+      };
+    });
+
+    return [...rows].sort((left, right) => {
+      const primary = compareCardRows(left, right, sortField);
+      if (primary !== 0) {
+        return sortDirection === 'asc' ? primary : -primary;
+      }
+
+      const fallbackByNumber = compareNullableText(left.card_number, right.card_number);
+      if (fallbackByNumber !== 0) {
+        return fallbackByNumber;
+      }
+
+      return compareNullableText(left.name, right.name);
+    });
+  }, [allocationPreview.lines, cardsWithQuantities, sortDirection, sortField]);
 
   const marketCurrencies = Array.from(
     new Set(selectedRows.map((card) => card.current_price_currency).filter((currency): currency is string => Boolean(currency))),
@@ -291,6 +384,14 @@ export default function SetImportPage() {
     ? Number((parsedDisplayTotalPrice - allocationPreview.totalAllocatedPrice).toFixed(2))
     : null;
   const isImportBlocked = Boolean(selectedSet && !selectedSet.is_complete);
+  const selectedCardIds = useMemo(
+    () => Object.keys(selectedCards).map((value) => Number(value)).filter((value) => Number.isFinite(value)),
+    [selectedCards],
+  );
+  const selectedCardCount = selectedCardIds.length;
+  const allVisibleCardIds = useMemo(() => sortedSetCards.map((card) => card.card_print_id), [sortedSetCards]);
+  const allVisibleSelected = allVisibleCardIds.length > 0 && allVisibleCardIds.every((cardPrintId) => Boolean(selectedCards[cardPrintId]));
+  const partiallyVisibleSelected = !allVisibleSelected && allVisibleCardIds.some((cardPrintId) => Boolean(selectedCards[cardPrintId]));
 
   const handleQuantityChange = (cardPrintId: number, nextQuantity: number) => {
     setSuccess(null);
@@ -302,6 +403,84 @@ export default function SetImportPage() {
       }
       return { ...current, [cardPrintId]: nextQuantity };
     });
+  };
+
+  const handleSortChange = (field: SortField) => {
+    setSortDirection((currentDirection) => {
+      if (sortField === field) {
+        return currentDirection === 'asc' ? 'desc' : 'asc';
+      }
+      return 'asc';
+    });
+    setSortField(field);
+  };
+
+  const toggleCardSelection = (cardPrintId: number) => {
+    setSelectedCards((current) => {
+      if (current[cardPrintId]) {
+        const nextState = { ...current };
+        delete nextState[cardPrintId];
+        return nextState;
+      }
+      return { ...current, [cardPrintId]: true };
+    });
+  };
+
+  const handleSelectAllVisible = (checked: boolean) => {
+    setSelectedCards((current) => {
+      if (!checked) {
+        const nextState = { ...current };
+        for (const cardPrintId of allVisibleCardIds) {
+          delete nextState[cardPrintId];
+        }
+        return nextState;
+      }
+
+      const nextState = { ...current };
+      for (const cardPrintId of allVisibleCardIds) {
+        nextState[cardPrintId] = true;
+      }
+      return nextState;
+    });
+  };
+
+  const applyBulkQuantityDelta = (delta: number) => {
+    if (!selectedCardIds.length || delta === 0) {
+      return;
+    }
+
+    setSuccess(null);
+    setQuantities((current) => {
+      const nextState = { ...current };
+      for (const cardPrintId of selectedCardIds) {
+        const nextQuantity = Math.max(0, (nextState[cardPrintId] || 0) + delta);
+        if (nextQuantity <= 0) {
+          delete nextState[cardPrintId];
+        } else {
+          nextState[cardPrintId] = nextQuantity;
+        }
+      }
+      return nextState;
+    });
+  };
+
+  const clearSelectedCardQuantities = () => {
+    if (!selectedCardIds.length) {
+      return;
+    }
+
+    setSuccess(null);
+    setQuantities((current) => {
+      const nextState = { ...current };
+      for (const cardPrintId of selectedCardIds) {
+        delete nextState[cardPrintId];
+      }
+      return nextState;
+    });
+  };
+
+  const clearCardSelection = () => {
+    setSelectedCards({});
   };
 
   const handleSave = async () => {
@@ -378,6 +557,11 @@ export default function SetImportPage() {
         <Alert
           severity={priceSyncJob.status === 'failed' ? 'error' : priceSyncJob.status === 'completed' ? 'success' : 'info'}
           onClose={() => setPriceSyncJob(null)}
+          action={
+            <Button color="inherit" size="small" onClick={() => setLogJob(priceSyncJob)}>
+              Mehr anzeigen
+            </Button>
+          }
         >
           {priceSyncJob.status === 'completed'
             ? `Preisupdate abgeschlossen. Letztes Preisupdate: ${formatDate(priceSyncJob.completed_at || priceSyncJob.created_at)}.`
@@ -388,6 +572,7 @@ export default function SetImportPage() {
                 )} gestartet.`}
         </Alert>
       ) : null}
+      <SyncJobLogDialog open={Boolean(logJob)} job={logJob} onClose={() => setLogJob(null)} />
 
       <Paper sx={{ p: 3 }}>
         <Stack spacing={2.5}>
@@ -415,6 +600,7 @@ export default function SetImportPage() {
               } else {
                 setSetCards([]);
                 setQuantities({});
+                setSelectedCards({});
               }
             }}
             isOptionEqualToValue={(option, value) => option.id === value.id}
@@ -518,19 +704,19 @@ export default function SetImportPage() {
               <MenuItem value="played">Played</MenuItem>
               <MenuItem value="poor">Poor</MenuItem>
             </TextField>
-              <TextField
-                select
-                label="Sprache des Einkaufs"
-                value={language}
-                onChange={(event) => {
-                  setSuccess(null);
-                  const nextLanguage = event.target.value;
-                  setLanguage(nextLanguage);
-                  if (selectedSet) {
-                    void loadSetCards(selectedSet.id, nextLanguage);
-                  }
-                }}
-              >
+            <TextField
+              select
+              label="Sprache des Einkaufs"
+              value={language}
+              onChange={(event) => {
+                setSuccess(null);
+                const nextLanguage = event.target.value;
+                setLanguage(nextLanguage);
+                if (selectedSet) {
+                  void loadSetCards(selectedSet.id, nextLanguage);
+                }
+              }}
+            >
               <MenuItem value="de">Deutsch</MenuItem>
               <MenuItem value="en">Englisch</MenuItem>
               <MenuItem value="jp">Japanisch</MenuItem>
@@ -567,7 +753,7 @@ export default function SetImportPage() {
           <Box sx={{ p: 3, pb: 2 }}>
             <Typography variant="h6">3. Kartenliste des Sets</Typography>
             <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              Sortiert nach Kartennummer. Pro Zeile siehst du live die verteilte Kostenbasis fuer genau diese Kartenmenge.
+              Die Tabelle ist pro Spalte sortierbar. Pro Zeile siehst du live die verteilte Kostenbasis fuer genau diese Kartenmenge.
             </Typography>
           </Box>
           <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
@@ -584,85 +770,197 @@ export default function SetImportPage() {
               <CircularProgress />
             </Box>
           ) : (
-            <Box sx={{ maxHeight: '68vh', overflow: 'auto' }}>
-              <Table stickyHeader size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Karte</TableCell>
-                    <TableCell>Nr.</TableCell>
-                    <TableCell>Seltenheit</TableCell>
-                    <TableCell align="right">Bestand</TableCell>
-                    <TableCell align="right">Marktpreis</TableCell>
-                    <TableCell align="right">Menge</TableCell>
-                    <TableCell align="right">Ankauf Zeile</TableCell>
-                    <TableCell align="right">Stk. kalk.</TableCell>
-                    <TableCell align="right">Schnell</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {setCards.map((card) => {
-                    const quantity = quantities[card.card_print_id] || 0;
-                    const allocationLine = allocationPreview.lines[card.card_print_id];
-                    return (
-                      <TableRow
-                        key={card.card_print_id}
-                        hover
-                        sx={{
-                          backgroundColor: quantity > 0 ? 'rgba(216, 169, 76, 0.08)' : undefined,
-                          transition: 'background-color 160ms ease',
-                        }}
-                      >
-                        <TableCell>
-                          <Stack direction="row" spacing={1.5} alignItems="center">
-                            <Avatar src={resolveMediaUrl(card.image_url)} variant="rounded" sx={{ width: 42, height: 58 }} />
-                            <Box>
-                              <Typography fontWeight={700}>{card.name}</Typography>
-                              <Typography variant="body2" color="text.secondary">
-                                {card.card_type || 'Keine Typinfo'}
-                              </Typography>
-                              <Typography variant="body2" color="text.secondary">
-                                {[card.set_code || selectedSet.set_code || 'Kein Setcode', card.language.toUpperCase()].join(' | ')}
-                              </Typography>
-                            </Box>
-                          </Stack>
-                        </TableCell>
-                        <TableCell>{card.card_number || 'n/a'}</TableCell>
-                        <TableCell>{card.rarity || 'n/a'}</TableCell>
-                        <TableCell align="right">{card.existing_quantity}</TableCell>
-                        <TableCell align="right">
-                          {card.current_market_price !== null && card.current_market_price !== undefined
-                            ? formatCurrency(card.current_market_price, card.current_price_currency || displayCurrency)
-                            : 'n/a'}
-                        </TableCell>
-                        <TableCell align="right" sx={{ width: 110 }}>
-                          <TextField
-                            type="number"
-                            size="small"
-                            value={quantity}
-                            onChange={(event) => handleQuantityChange(card.card_print_id, normalizeQuantity(event.target.value))}
-                            onFocus={(event) => event.target.select()}
-                            inputProps={{ min: 0, step: 1, inputMode: 'numeric' }}
-                          />
-                        </TableCell>
-                        <TableCell align="right">
-                          {allocationLine ? formatCurrency(allocationLine.allocatedPurchaseTotal, displayCurrency) : 'n/a'}
-                        </TableCell>
-                        <TableCell align="right">
-                          {allocationLine ? formatCurrency(allocationLine.allocatedUnitPrice, displayCurrency) : 'n/a'}
-                        </TableCell>
-                        <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                          <Button size="small" onClick={() => handleQuantityChange(card.card_print_id, quantity + 1)}>
-                            +1
-                          </Button>
-                          <Button size="small" color="inherit" onClick={() => handleQuantityChange(card.card_print_id, 0)}>
-                            0
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+            <Box>
+              <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                justifyContent="space-between"
+                alignItems={{ xs: 'stretch', md: 'center' }}
+                spacing={1.5}
+                sx={{ px: 3, py: 2 }}
+              >
+                <Typography color="text.secondary">
+                  {selectedCardCount > 0
+                    ? `${selectedCardCount} Karten markiert. Mengen lassen sich gesammelt anpassen.`
+                    : 'Mehrfachauswahl aktiv: markiere Karten, um ihre Mengen gesammelt zu erhoehen.'}
+                </Typography>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  <Button size="small" variant="outlined" onClick={() => applyBulkQuantityDelta(1)} disabled={!selectedCardCount}>
+                    +1 fuer Auswahl
+                  </Button>
+                  <Button size="small" variant="outlined" onClick={() => applyBulkQuantityDelta(5)} disabled={!selectedCardCount}>
+                    +5 fuer Auswahl
+                  </Button>
+                  <Button size="small" color="inherit" onClick={clearSelectedCardQuantities} disabled={!selectedCardCount}>
+                    Mengen leeren
+                  </Button>
+                  <Button size="small" color="inherit" onClick={clearCardSelection} disabled={!selectedCardCount}>
+                    Auswahl loesen
+                  </Button>
+                </Stack>
+              </Stack>
+              <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
+              <Box sx={{ maxHeight: '68vh', overflow: 'auto' }}>
+                <Table stickyHeader size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell padding="checkbox">
+                        <Checkbox
+                          checked={allVisibleSelected}
+                          indeterminate={partiallyVisibleSelected}
+                          onChange={(event) => handleSelectAllVisible(event.target.checked)}
+                          inputProps={{ 'aria-label': 'Alle sichtbaren Karten auswaehlen' }}
+                        />
+                      </TableCell>
+                      <TableCell sortDirection={sortField === 'name' ? sortDirection : false}>
+                        <TableSortLabel
+                          active={sortField === 'name'}
+                          direction={sortField === 'name' ? sortDirection : 'asc'}
+                          onClick={() => handleSortChange('name')}
+                        >
+                          Karte
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell sortDirection={sortField === 'card_number' ? sortDirection : false}>
+                        <TableSortLabel
+                          active={sortField === 'card_number'}
+                          direction={sortField === 'card_number' ? sortDirection : 'asc'}
+                          onClick={() => handleSortChange('card_number')}
+                        >
+                          Nr.
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell sortDirection={sortField === 'rarity' ? sortDirection : false}>
+                        <TableSortLabel
+                          active={sortField === 'rarity'}
+                          direction={sortField === 'rarity' ? sortDirection : 'asc'}
+                          onClick={() => handleSortChange('rarity')}
+                        >
+                          Seltenheit
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell align="right" sortDirection={sortField === 'existing_quantity' ? sortDirection : false}>
+                        <TableSortLabel
+                          active={sortField === 'existing_quantity'}
+                          direction={sortField === 'existing_quantity' ? sortDirection : 'asc'}
+                          onClick={() => handleSortChange('existing_quantity')}
+                        >
+                          Bestand
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell align="right" sortDirection={sortField === 'current_market_price' ? sortDirection : false}>
+                        <TableSortLabel
+                          active={sortField === 'current_market_price'}
+                          direction={sortField === 'current_market_price' ? sortDirection : 'asc'}
+                          onClick={() => handleSortChange('current_market_price')}
+                        >
+                          Marktpreis
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell align="right" sortDirection={sortField === 'selectedQuantity' ? sortDirection : false}>
+                        <TableSortLabel
+                          active={sortField === 'selectedQuantity'}
+                          direction={sortField === 'selectedQuantity' ? sortDirection : 'asc'}
+                          onClick={() => handleSortChange('selectedQuantity')}
+                        >
+                          Menge
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell align="right" sortDirection={sortField === 'allocatedPurchaseTotal' ? sortDirection : false}>
+                        <TableSortLabel
+                          active={sortField === 'allocatedPurchaseTotal'}
+                          direction={sortField === 'allocatedPurchaseTotal' ? sortDirection : 'asc'}
+                          onClick={() => handleSortChange('allocatedPurchaseTotal')}
+                        >
+                          Ankauf Zeile
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell align="right" sortDirection={sortField === 'allocatedUnitPrice' ? sortDirection : false}>
+                        <TableSortLabel
+                          active={sortField === 'allocatedUnitPrice'}
+                          direction={sortField === 'allocatedUnitPrice' ? sortDirection : 'asc'}
+                          onClick={() => handleSortChange('allocatedUnitPrice')}
+                        >
+                          Stk. kalk.
+                        </TableSortLabel>
+                      </TableCell>
+                      <TableCell align="right">Schnell</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {sortedSetCards.map((card) => {
+                      const isSelected = Boolean(selectedCards[card.card_print_id]);
+                      return (
+                        <TableRow
+                          key={card.card_print_id}
+                          hover
+                          sx={{
+                            backgroundColor: isSelected
+                              ? 'rgba(78, 162, 138, 0.12)'
+                              : card.selectedQuantity > 0
+                                ? 'rgba(216, 169, 76, 0.08)'
+                                : undefined,
+                            transition: 'background-color 160ms ease',
+                          }}
+                        >
+                          <TableCell padding="checkbox">
+                            <Checkbox
+                              checked={isSelected}
+                              onChange={() => toggleCardSelection(card.card_print_id)}
+                              inputProps={{ 'aria-label': `${card.name} auswaehlen` }}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Stack direction="row" spacing={1.5} alignItems="center">
+                              <Avatar src={resolveMediaUrl(card.image_url)} variant="rounded" sx={{ width: 56, height: 78 }} />
+                              <Box>
+                                <Typography fontWeight={700}>{card.name}</Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  {card.card_type || 'Keine Typinfo'}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  {[card.set_code || selectedSet.set_code || 'Kein Setcode', card.language.toUpperCase()].join(' | ')}
+                                </Typography>
+                              </Box>
+                            </Stack>
+                          </TableCell>
+                          <TableCell>{card.card_number || 'n/a'}</TableCell>
+                          <TableCell>{card.rarity || 'n/a'}</TableCell>
+                          <TableCell align="right">{card.existing_quantity}</TableCell>
+                          <TableCell align="right">
+                            {card.current_market_price !== null && card.current_market_price !== undefined
+                              ? formatCurrency(card.current_market_price, card.current_price_currency || displayCurrency)
+                              : 'n/a'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ width: 110 }}>
+                            <TextField
+                              type="number"
+                              size="small"
+                              value={card.selectedQuantity}
+                              onChange={(event) => handleQuantityChange(card.card_print_id, normalizeQuantity(event.target.value))}
+                              onFocus={(event) => event.target.select()}
+                              inputProps={{ min: 0, step: 1, inputMode: 'numeric' }}
+                            />
+                          </TableCell>
+                          <TableCell align="right">
+                            {card.allocatedPurchaseTotal !== null ? formatCurrency(card.allocatedPurchaseTotal, displayCurrency) : 'n/a'}
+                          </TableCell>
+                          <TableCell align="right">
+                            {card.allocatedUnitPrice !== null ? formatCurrency(card.allocatedUnitPrice, displayCurrency) : 'n/a'}
+                          </TableCell>
+                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                            <Button size="small" onClick={() => handleQuantityChange(card.card_print_id, card.selectedQuantity + 1)}>
+                              +1
+                            </Button>
+                            <Button size="small" color="inherit" onClick={() => handleQuantityChange(card.card_print_id, 0)}>
+                              0
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </Box>
             </Box>
           )}
         </Paper>
