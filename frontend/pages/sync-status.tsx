@@ -22,6 +22,7 @@ import {
 } from '@mui/material';
 
 import api, { getApiErrorMessage } from '../lib/api';
+import SyncJobLogDialog from '../components/sync-job-log-dialog';
 import { formatDate } from '../lib/format';
 import { SyncJob, SyncOverview } from '../lib/types';
 
@@ -63,6 +64,7 @@ export default function SyncStatusPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [triggeringJob, setTriggeringJob] = useState<string | null>(null);
   const [retryingJobId, setRetryingJobId] = useState<number | null>(null);
+  const [logJob, setLogJob] = useState<SyncJob | null>(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [error, setError] = useState<string | null>(null);
 
@@ -289,29 +291,35 @@ export default function SyncStatusPage() {
                 </TableCell>
                 <TableCell>{formatDate(job.created_at)}</TableCell>
                 <TableCell>{formatDate(job.completed_at || job.started_at || null)}</TableCell>
-                <TableCell>{job.error_message || job.stuck_reason || job.log_excerpt || 'n/a'}</TableCell>
+                <TableCell sx={{ maxWidth: 420 }}>
+                  <Typography variant="body2" sx={{ whiteSpace: 'normal' }}>
+                    {job.error_message || job.stuck_reason || job.log_excerpt || 'n/a'}
+                  </Typography>
+                </TableCell>
                 <TableCell align="right">
-                  {job.can_retry ? (
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={retryingJobId === job.id ? <CircularProgress size={14} color="inherit" /> : <ReplayRoundedIcon />}
-                      disabled={retryingJobId === job.id}
-                      onClick={() => void retry(job.id)}
-                    >
-                      Retry
+                  <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                    <Button size="small" color="inherit" onClick={() => setLogJob(job)}>
+                      Mehr anzeigen
                     </Button>
-                  ) : (
-                    <Typography variant="body2" color="text.secondary">
-                      -
-                    </Typography>
-                  )}
+                    {job.can_retry ? (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={retryingJobId === job.id ? <CircularProgress size={14} color="inherit" /> : <ReplayRoundedIcon />}
+                        disabled={retryingJobId === job.id}
+                        onClick={() => void retry(job.id)}
+                      >
+                        Retry
+                      </Button>
+                    ) : null}
+                  </Stack>
                 </TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </Paper>
+      <SyncJobLogDialog open={Boolean(logJob)} job={logJob} onClose={() => setLogJob(null)} />
     </Stack>
   );
 }
