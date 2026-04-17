@@ -384,6 +384,7 @@ class SyncJobResponse(BaseModel):
     priority: int = 0
     payload: dict | None = None
     log_excerpt: str | None = None
+    log_details: str | None = None
     error_message: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
