@@ -89,6 +89,9 @@ export default function CardDetailPage() {
   const cardmarketLinkQuality = latestSnapshot?.match_quality || card?.cardmarket_match_quality || card?.pricing.cardmarket_link_mode || null;
   const cardmarketLinkIsExact = cardmarketLinkQuality === 'exact_verified' || cardmarketLinkQuality === 'exact_verified_variant';
   const cardmarketLinkIsSafe = cardmarketLinkIsExact || cardmarketLinkQuality === 'set_name_verified_name_only';
+  const medianTop5Price = latestSnapshot?.market_price_median_top5 ?? latestSnapshot?.selected_market_price ?? latestSnapshot?.price ?? null;
+  const offersConsideredCount = latestSnapshot?.offers_considered_count ?? latestSnapshot?.offer_count_considered ?? null;
+  const top5OfferPrices = latestSnapshot?.top5_offer_prices?.length ? latestSnapshot.top5_offer_prices : latestSnapshot?.raw_offer_prices_sample ?? [];
 
   useEffect(() => {
     if (!router.query.id) {
@@ -273,22 +276,46 @@ export default function CardDetailPage() {
                 </Typography>
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Marktpreis (bereinigt)</Typography>
+                <Typography color="text.secondary">Marktpreis (Median Top 5)</Typography>
                 <Typography fontWeight={700}>
-                  {latestSnapshot ? formatCurrency(latestSnapshot.selected_market_price ?? latestSnapshot.price, latestSnapshot.currency) : formatCurrency(card.current_market_price, card.current_price_currency)}
+                  {latestSnapshot ? formatCurrency(medianTop5Price, latestSnapshot.currency) : formatCurrency(card.current_market_price, card.current_price_currency)}
                 </Typography>
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Strategie</Typography>
-                <Typography fontWeight={700}>{latestSnapshot?.pricing_strategy_used || 'n/a'}</Typography>
+                <Typography color="text.secondary">1-Tages-Durchschnitt</Typography>
+                <Typography fontWeight={700}>
+                  {latestSnapshot?.avg_1d !== undefined && latestSnapshot?.avg_1d !== null
+                    ? formatCurrency(latestSnapshot.avg_1d, latestSnapshot.currency)
+                    : 'n/a'}
+                </Typography>
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Angebote beruecksichtigt</Typography>
-                <Typography fontWeight={700}>{latestSnapshot?.offer_count_considered ?? 'n/a'}</Typography>
+                <Typography color="text.secondary">7-Tages-Durchschnitt</Typography>
+                <Typography fontWeight={700}>
+                  {latestSnapshot?.avg_7d !== undefined && latestSnapshot?.avg_7d !== null
+                    ? formatCurrency(latestSnapshot.avg_7d, latestSnapshot.currency)
+                    : 'n/a'}
+                </Typography>
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Ausreisser ignoriert</Typography>
-                <Typography fontWeight={700}>{latestSnapshot?.outlier_detected ? 'Ja' : 'Nein'}</Typography>
+                <Typography color="text.secondary">30-Tages-Durchschnitt</Typography>
+                <Typography fontWeight={700}>
+                  {latestSnapshot?.avg_30d !== undefined && latestSnapshot?.avg_30d !== null
+                    ? formatCurrency(latestSnapshot.avg_30d, latestSnapshot.currency)
+                    : 'n/a'}
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                <Typography color="text.secondary">Angebote fuer Median</Typography>
+                <Typography fontWeight={700}>{offersConsideredCount ?? 'n/a'}</Typography>
+              </Box>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                <Typography color="text.secondary">Top-5-Angebote</Typography>
+                <Typography fontWeight={700}>
+                  {top5OfferPrices.length > 0
+                    ? top5OfferPrices.map((price) => formatCurrency(price, latestSnapshot?.currency || card.current_price_currency)).join(', ')
+                    : 'n/a'}
+                </Typography>
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
                 <Typography color="text.secondary">Fehlversuche</Typography>
@@ -384,9 +411,9 @@ export default function CardDetailPage() {
               </Alert>
             ) : null}
 
-            {latestSnapshot?.outlier_detected ? (
+            {latestSnapshot?.parse_status && latestSnapshot.parse_status !== 'ok' ? (
               <Alert severity="info" sx={{ mt: 2 }}>
-                Hinweis: Das guenstigste Angebot wurde als Ausreisser ignoriert.
+                Parser-Status: {latestSnapshot.parse_status}
               </Alert>
             ) : null}
 
@@ -402,7 +429,7 @@ export default function CardDetailPage() {
                 disabled={!cardmarketLink || cardmarketLinkQuality === 'failed'}
                 sx={{ mt: 2.5 }}
               >
-                {cardmarketLinkIsExact ? 'Zum verifizierten Cardmarket-Produkt' : cardmarketLinkQuality === 'set_name_verified_name_only' ? 'Cardmarket-Produkt (Name-only)' : 'Cardmarket-Fallback'}
+                {cardmarketLinkIsExact ? 'Zum verifizierten Cardmarket-Produkt' : cardmarketLinkQuality === 'set_name_verified_name_only' ? 'Cardmarket-Produkt (Name-only)' : 'Cardmarket-Produkt oeffnen'}
               </Button>
             ) : null}
           </Paper>
