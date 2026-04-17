@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
+import axios from 'axios';
 import {
   Alert,
   Avatar,
@@ -10,6 +11,10 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
   MenuItem,
   Paper,
@@ -30,10 +35,31 @@ import api, { buildQuery, getApiErrorMessage, resolveMediaUrl } from '../../lib/
 import { formatCurrency, formatPercent } from '../../lib/format';
 import { pricingColor, pricingLabel, pricingUpdateLabel } from '../../lib/pricing';
 import { CardDetail, CardFilterOptions, CardListResponse, CardPayload, CardSummary } from '../../lib/types';
-import { useAppSettings } from '../../components/app-settings-provider';
+
+type DuplicateCardConflict = {
+  code: 'duplicate_card';
+  message: string;
+  existing_item_id: number;
+  existing_quantity: number;
+  increment_by: number;
+  suggested_quantity: number;
+  signature?: {
+    name?: string;
+    set_code?: string | null;
+    language?: string;
+    condition?: string;
+  };
+};
+
+function isDuplicateCardConflict(value: unknown): value is DuplicateCardConflict {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return candidate.code === 'duplicate_card' && typeof candidate.existing_item_id === 'number' && typeof candidate.existing_quantity === 'number';
+}
 
 export default function CardsPage() {
-  const { settings } = useAppSettings();
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -50,6 +76,9 @@ export default function CardsPage() {
   const [editingCard, setEditingCard] = useState<CardDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [duplicateSaveLoading, setDuplicateSaveLoading] = useState(false);
+  const [pendingCreatePayload, setPendingCreatePayload] = useState<CardPayload | null>(null);
+  const [duplicateConflict, setDuplicateConflict] = useState<DuplicateCardConflict | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadCards = async () => {
@@ -82,12 +111,6 @@ export default function CardsPage() {
   }, [page, pageSize, query, language, rarity, condition, storageLocationId, hasImage, hasPrice]);
 
   useEffect(() => {
-    if (!language) {
-      setLanguage(settings.preferred_card_language || 'de');
-    }
-  }, [language, settings.preferred_card_language]);
-
-  useEffect(() => {
     let active = true;
     const loadFilters = async () => {
       try {
@@ -109,6 +132,8 @@ export default function CardsPage() {
 
   const openCreateDialog = () => {
     setEditingCard(null);
+    setDuplicateConflict(null);
+    setPendingCreatePayload(null);
     setDialogOpen(true);
   };
 
@@ -116,6 +141,8 @@ export default function CardsPage() {
     try {
       const response = await api.get<CardDetail>(`/cards/${cardId}`);
       setEditingCard(response.data);
+      setDuplicateConflict(null);
+      setPendingCreatePayload(null);
       setDialogOpen(true);
     } catch (requestError) {
       setError(getApiErrorMessage(requestError));
@@ -132,11 +159,44 @@ export default function CardsPage() {
       }
       setDialogOpen(false);
       setEditingCard(null);
+      setDuplicateConflict(null);
+      setPendingCreatePayload(null);
+      await loadCards();
+    } catch (requestError) {
+      if (!editingCard && axios.isAxiosError(requestError) && requestError.response?.status === 409) {
+        const detail = requestError.response?.data?.detail;
+        if (isDuplicateCardConflict(detail)) {
+          setPendingCreatePayload(payload);
+          setDuplicateConflict(detail);
+          setError(null);
+          return;
+        }
+      }
+      setError(getApiErrorMessage(requestError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleIncreaseDuplicateQuantity = async () => {
+    if (!pendingCreatePayload || !duplicateConflict) {
+      return;
+    }
+    setDuplicateSaveLoading(true);
+    try {
+      await api.post('/cards/', {
+        ...pendingCreatePayload,
+        increment_existing_quantity_on_duplicate: true,
+      });
+      setDuplicateConflict(null);
+      setPendingCreatePayload(null);
+      setDialogOpen(false);
+      setEditingCard(null);
       await loadCards();
     } catch (requestError) {
       setError(getApiErrorMessage(requestError));
     } finally {
-      setSaving(false);
+      setDuplicateSaveLoading(false);
     }
   };
 
@@ -322,15 +382,63 @@ export default function CardsPage() {
         )}
       </Paper>
 
+      <Dialog
+        open={Boolean(duplicateConflict)}
+        onClose={() => {
+          if (duplicateSaveLoading) {
+            return;
+          }
+          setDuplicateConflict(null);
+          setPendingCreatePayload(null);
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Identische Karte bereits vorhanden</DialogTitle>
+        <DialogContent>
+          <Typography>
+            {duplicateConflict?.message ||
+              'Diese Kartenposition existiert bereits. Du kannst die bestehende Menge erhoehen oder die Eingaben weiter bearbeiten.'}
+          </Typography>
+          {duplicateConflict ? (
+            <Typography color="text.secondary" sx={{ mt: 1.25 }}>
+              Bestand aktuell: {duplicateConflict.existing_quantity}. Vorschlag: +{duplicateConflict.increment_by} auf {duplicateConflict.suggested_quantity}.
+            </Typography>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setDuplicateConflict(null);
+              setPendingCreatePayload(null);
+            }}
+            disabled={duplicateSaveLoading}
+          >
+            Weiter bearbeiten
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => void handleIncreaseDuplicateQuantity()}
+            disabled={duplicateSaveLoading}
+          >
+            {duplicateSaveLoading
+              ? 'Erhoehe Menge...'
+              : `Menge um +${duplicateConflict?.increment_by ?? 1} erhoehen`}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <CardFormDialog
         open={dialogOpen}
         title={editingCard ? `Karte bearbeiten: ${editingCard.name}` : 'Neue Kartenposition'}
         initialValue={editingCard}
         storageLocations={filters?.storage_locations || []}
-        loading={saving}
+        loading={saving || duplicateSaveLoading}
         onClose={() => {
           setDialogOpen(false);
           setEditingCard(null);
+          setDuplicateConflict(null);
+          setPendingCreatePayload(null);
         }}
         onSubmit={handleSave}
       />
