@@ -23,6 +23,16 @@ app.add_middleware(
 app.include_router(api_router, prefix=settings.api_prefix)
 
 
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {
+        "status": "ok",
+        "app": settings.app_name,
+        "api_prefix": settings.api_prefix,
+        "health_url": f"{settings.api_prefix}/health/",
+    }
+
+
 @app.on_event("startup")
 async def startup():
     settings.cards_media_path.mkdir(parents=True, exist_ok=True)
