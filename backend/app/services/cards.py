@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.integrations.cardmarket import CardmarketPrintContext, CardmarketResolvedProduct, get_cardmarket_product_resolver
+from app.integrations.cardmarket import CardmarketPrintContext, CardmarketProductUrlBuilder, CardmarketResolvedProduct, get_cardmarket_product_resolver
 from app.integrations.cardmarket_links import (
     CARDMARKET_CATEGORY,
     CARDMARKET_MATCH_AMBIGUOUS,
@@ -24,6 +24,7 @@ from app.integrations.cardmarket_links import (
     build_cardmarket_set_slug,
     normalize_cardmarket_product_url,
     resolve_cardmarket_product_url,
+    split_cardmarket_product_url,
     _slug_has_variant_marker,
 )
 from app.integrations.card_data import get_card_data_provider
@@ -48,6 +49,7 @@ from app.services.price_monitor import ensure_initial_price_monitor_state
 from app.services.sync import _extract_price_targets, serialize_sync_job
 
 logger = logging.getLogger(__name__)
+_CARDMARKET_PRODUCT_URL_BUILDER = CardmarketProductUrlBuilder()
 
 LANGUAGE_SET_CODE_PREFIXES: dict[str, tuple[str, ...]] = {
     "de": ("DE",),
@@ -387,8 +389,13 @@ def _resolve_default_remote_price(card_data: dict) -> tuple[float | None, str | 
     return None, None, None
 
 
-def _build_print_label(set_name: str | None, set_code: str | None, rarity: str | None) -> str:
-    parts = [part for part in [set_name, set_code, rarity] if part]
+def _build_print_label(
+    set_name: str | None,
+    set_code: str | None,
+    rarity: str | None,
+    variant_name: str | None = None,
+) -> str:
+    parts = [part for part in [set_name, set_code, rarity, variant_name] if part]
     return " | ".join(parts) if parts else "Unbekannter Druck"
 
 
@@ -427,6 +434,56 @@ def _set_codes_match_language_neutral(left: str | None, right: str | None) -> bo
     left_signature = _set_code_language_neutral_signature(left)
     right_signature = _set_code_language_neutral_signature(right)
     return bool(left_signature and right_signature and left_signature == right_signature)
+
+
+def _cardmarket_variant_number(value: str | None) -> int | None:
+    match = re.search(r"V\.?\s*-?\s*(\d+)", value or "", flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _append_local_cardmarket_reference(
+    references: dict[tuple[str | None, str | None, str | None, str | None], list[dict[str, object | None]]],
+    key: tuple[str | None, str | None, str | None, str | None],
+    *,
+    url: str | None,
+    product_slug: str | None = None,
+    set_slug: str | None = None,
+    set_name: str | None = None,
+    product_name: str | None = None,
+    variant_name: str | None = None,
+    match_quality: str | None = None,
+    verified_at: datetime | None = None,
+) -> None:
+    exact_url = normalize_cardmarket_product_url(url)
+    if not exact_url:
+        return
+
+    _, derived_set_slug, derived_product_slug = split_cardmarket_product_url(exact_url)
+    candidate = {
+        "url": exact_url,
+        "product_slug": product_slug or derived_product_slug,
+        "set_slug": set_slug or derived_set_slug,
+        "set_name": set_name,
+        "product_name": product_name,
+        "variant_name": variant_name,
+        "match_quality": match_quality,
+        "verified_at": verified_at,
+    }
+
+    existing = references.setdefault(key, [])
+    candidate_identity = (
+        candidate["url"],
+        candidate["product_slug"],
+        candidate["variant_name"],
+    )
+    if any((entry.get("url"), entry.get("product_slug"), entry.get("variant_name")) == candidate_identity for entry in existing):
+        return
+    existing.append(candidate)
 
 
 def _is_verified_cardmarket_quality(value: str | None) -> bool:
@@ -796,8 +853,8 @@ async def _load_local_cardmarket_references(
     *,
     normalized_name: str,
     language: str,
-) -> dict[tuple[str | None, str | None, str | None, str | None], str]:
-    exact_references: dict[tuple[str | None, str | None, str | None, str | None], str] = {}
+) -> dict[tuple[str | None, str | None, str | None, str | None], list[dict[str, object | None]]]:
+    exact_references: dict[tuple[str | None, str | None, str | None, str | None], list[dict[str, object | None]]] = {}
 
     card_print_rows = await db.execute(
         select(
@@ -808,7 +865,11 @@ async def _load_local_cardmarket_references(
             CardPrint.cardmarket_product_url,
             CardPrint.cardmarket_product_slug,
             CardPrint.cardmarket_set_slug,
+            CardPrint.cardmarket_set_name,
+            CardPrint.cardmarket_product_name,
+            CardPrint.cardmarket_variant_name,
             CardPrint.cardmarket_match_quality,
+            CardPrint.cardmarket_verified_at,
         )
         .join(Card, Card.id == CardPrint.card_id)
         .where(
@@ -816,15 +877,38 @@ async def _load_local_cardmarket_references(
             CardPrint.language == language,
         )
     )
-    for set_code, card_number, rarity, card_language, product_url, product_slug, set_slug, match_quality in card_print_rows.all():
+    for (
+        set_code,
+        card_number,
+        rarity,
+        card_language,
+        product_url,
+        product_slug,
+        set_slug,
+        cardmarket_set_name,
+        cardmarket_product_name,
+        cardmarket_variant_name,
+        match_quality,
+        verified_at,
+    ) in card_print_rows.all():
         exact_url = normalize_cardmarket_product_url(product_url)
         if not exact_url and product_slug and set_slug:
             locale = _preferred_cardmarket_locale(card_language, language)
             exact_url = build_cardmarket_product_url(locale, set_slug, product_slug)
         if match_quality is not None and not _is_safe_cardmarket_quality(match_quality):
             continue
-        if exact_url:
-            exact_references[(set_code, card_number, rarity, card_language)] = exact_url
+        _append_local_cardmarket_reference(
+            exact_references,
+            (set_code, card_number, rarity, card_language),
+            url=exact_url,
+            product_slug=product_slug,
+            set_slug=set_slug,
+            set_name=cardmarket_set_name,
+            product_name=cardmarket_product_name,
+            variant_name=cardmarket_variant_name,
+            match_quality=match_quality,
+            verified_at=verified_at,
+        )
 
     mapping_rows = await db.execute(
         select(
@@ -832,6 +916,13 @@ async def _load_local_cardmarket_references(
             CardPrint.card_number,
             CardPrint.rarity,
             CardPrint.language,
+            CardPrint.cardmarket_product_slug,
+            CardPrint.cardmarket_set_slug,
+            CardPrint.cardmarket_set_name,
+            CardPrint.cardmarket_product_name,
+            CardPrint.cardmarket_variant_name,
+            CardPrint.cardmarket_match_quality,
+            CardPrint.cardmarket_verified_at,
             SourceMapping.external_url,
             SourceMapping.external_id,
         )
@@ -844,10 +935,34 @@ async def _load_local_cardmarket_references(
             CardPrint.language == language,
         )
     )
-    for set_code, card_number, rarity, card_language, external_url, external_id in mapping_rows.all():
+    for (
+        set_code,
+        card_number,
+        rarity,
+        card_language,
+        product_slug,
+        set_slug,
+        cardmarket_set_name,
+        cardmarket_product_name,
+        cardmarket_variant_name,
+        match_quality,
+        verified_at,
+        external_url,
+        external_id,
+    ) in mapping_rows.all():
         exact_url = normalize_cardmarket_product_url(external_url) or normalize_cardmarket_product_url(external_id)
-        if exact_url:
-            exact_references.setdefault((set_code, card_number, rarity, card_language), exact_url)
+        _append_local_cardmarket_reference(
+            exact_references,
+            (set_code, card_number, rarity, card_language),
+            url=exact_url,
+            product_slug=product_slug,
+            set_slug=set_slug,
+            set_name=cardmarket_set_name,
+            product_name=cardmarket_product_name,
+            variant_name=cardmarket_variant_name,
+            match_quality=match_quality,
+            verified_at=verified_at,
+        )
 
     return exact_references
 
@@ -995,6 +1110,131 @@ def _select_cardmarket_print(
     return best_option if best_score > 0 else None
 
 
+def _same_card_lookup_print_option(left: CardLookupPrintOption, right: CardLookupPrintOption) -> bool:
+    return (
+        left.set_name == right.set_name
+        and left.set_code == right.set_code
+        and left.card_number == right.card_number
+        and left.rarity == right.rarity
+        and left.ygoprodeck_id == right.ygoprodeck_id
+    )
+
+
+def _card_lookup_print_option_dedupe_key(option: CardLookupPrintOption) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None]:
+    return (
+        option.set_code,
+        option.card_number,
+        option.rarity,
+        option.cardmarket_variant_name,
+        option.cardmarket_product_slug,
+        normalize_cardmarket_product_url(option.cardmarket_product_url or option.cardmarket_reference),
+    )
+
+
+def _build_cardmarket_variant_options_from_import(
+    product: CardmarketPublicProduct,
+    resolved_print: CardLookupPrintOption,
+    matched_option: CardLookupPrintOption | None = None,
+) -> list[CardLookupPrintOption]:
+    imported_variant_number = _cardmarket_variant_number(product.variant_name or product.product_slug)
+    if not imported_variant_number or not product.set_slug:
+        return [resolved_print]
+
+    product_name = product.product_name or resolved_print.cardmarket_product_name or (matched_option.cardmarket_product_name if matched_option else None)
+    rarity = product.rarity or resolved_print.rarity or (matched_option.rarity if matched_option else None)
+    if not product_name or not rarity:
+        return [resolved_print]
+
+    imported_exact_url = normalize_cardmarket_product_url(resolved_print.cardmarket_product_url or resolved_print.cardmarket_reference)
+    imported_locale, _, _ = split_cardmarket_product_url(imported_exact_url or product.url)
+    cardmarket_locale = imported_locale or "de"
+    variant_options: list[CardLookupPrintOption] = []
+    for variant_number in range(1, max(imported_variant_number, 2) + 1):
+        variant_name = f"V{variant_number}"
+        product_slug = _CARDMARKET_PRODUCT_URL_BUILDER.build_product_slug(
+            product_name=product_name,
+            variant_name=variant_name,
+            rarity=rarity,
+        )
+        if not product_slug:
+            continue
+
+        exact_url = f"https://www.cardmarket.com/{cardmarket_locale}/YuGiOh/Products/Singles/{product.set_slug}/{product_slug}"
+        is_imported_variant = imported_exact_url == exact_url or variant_number == imported_variant_number
+        base_option = resolved_print if is_imported_variant else (matched_option or resolved_print)
+        variant_options.append(
+            base_option.model_copy(
+                update={
+                    "cardmarket_product_url": exact_url,
+                    "cardmarket_product_slug": product_slug,
+                    "cardmarket_set_slug": product.set_slug,
+                    "cardmarket_set_name": product.set_name or base_option.cardmarket_set_name or base_option.set_name,
+                    "cardmarket_product_name": product_name,
+                    "cardmarket_variant_name": variant_name,
+                    "cardmarket_category": product.category,
+                    "cardmarket_match_quality": resolved_print.cardmarket_match_quality if is_imported_variant else CARDMARKET_MATCH_SET_NAME,
+                    "cardmarket_verified_at": resolved_print.cardmarket_verified_at if is_imported_variant else None,
+                    "market_price": resolved_print.market_price if is_imported_variant else (matched_option.market_price if matched_option else None),
+                    "price_currency": resolved_print.price_currency if is_imported_variant else (matched_option.price_currency if matched_option else None),
+                    "price_source": resolved_print.price_source if is_imported_variant else (matched_option.price_source if matched_option else None),
+                    "price_note": resolved_print.price_note if is_imported_variant else (matched_option.price_note if matched_option else resolved_print.price_note),
+                    "cardmarket_reference": exact_url,
+                    "display_label": _build_print_label(
+                        base_option.set_name or product.set_name,
+                        base_option.set_code,
+                        base_option.rarity or rarity,
+                        variant_name,
+                    ),
+                }
+            )
+        )
+
+    if not variant_options:
+        return [resolved_print]
+
+    deduped: list[CardLookupPrintOption] = []
+    seen_keys: set[tuple[str | None, str | None, str | None, str | None, str | None, str | None]] = set()
+    for option in variant_options:
+        key = _card_lookup_print_option_dedupe_key(option)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(option)
+    return deduped or [resolved_print]
+
+
+def _merge_cardmarket_imported_print_options(
+    base_lookup: CardLookupResponse,
+    product: CardmarketPublicProduct,
+    resolved_print: CardLookupPrintOption,
+    matched_print: CardLookupPrintOption | None,
+) -> list[CardLookupPrintOption]:
+    replacement_options = _build_cardmarket_variant_options_from_import(product, resolved_print, matched_print)
+    merged_options: list[CardLookupPrintOption] = []
+    replaced_matched_option = False
+
+    for option in base_lookup.print_options:
+        if matched_print and _same_card_lookup_print_option(option, matched_print):
+            if not replaced_matched_option:
+                merged_options.extend(replacement_options)
+                replaced_matched_option = True
+            continue
+        merged_options.append(option)
+
+    if not replaced_matched_option:
+        merged_options.extend(replacement_options)
+
+    deduped_options: list[CardLookupPrintOption] = []
+    seen_keys: set[tuple[str | None, str | None, str | None, str | None, str | None, str | None]] = set()
+    for option in merged_options:
+        key = _card_lookup_print_option_dedupe_key(option)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped_options.append(option)
+    return deduped_options
+
+
 def _build_cardmarket_print_option(product: CardmarketPublicProduct, matched_option: CardLookupPrintOption | None = None) -> CardLookupPrintOption:
     market_price = product.price_trend if product.price_trend is not None else matched_option.market_price if matched_option else None
     price_source = "cardmarket:public-product-page" if product.price_trend is not None else matched_option.price_source if matched_option else None
@@ -1026,6 +1266,7 @@ def _build_cardmarket_print_option(product: CardmarketPublicProduct, matched_opt
             matched_option.set_name if matched_option and matched_option.set_name else product.set_name,
             matched_option.set_code if matched_option else None,
             matched_option.rarity if matched_option and matched_option.rarity else product.rarity,
+            product.variant_name if exact_product_page else None,
         ),
     )
 
@@ -1081,6 +1322,7 @@ async def get_card_lookup_from_cardmarket_url(
         converted = await convert_amount(resolved_print.market_price, resolved_print.price_currency, display_currency)
         resolved_print.market_price = float(converted) if converted is not None else None
         resolved_print.price_currency = display_currency
+    merged_print_options = _merge_cardmarket_imported_print_options(base_lookup, product, resolved_print, matched_print)
 
     converted_default_price = base_lookup.default_market_price
     if converted_default_price is not None and base_lookup.default_price_currency and base_lookup.default_price_currency.upper() != display_currency.upper():
@@ -1107,7 +1349,7 @@ async def get_card_lookup_from_cardmarket_url(
             "cardmarket_category": product.category,
             "cardmarket_match_quality": resolved_print.cardmarket_match_quality,
             "cardmarket_verified_at": resolved_print.cardmarket_verified_at,
-            "print_options": [resolved_print],
+            "print_options": merged_print_options,
         }
     )
 
@@ -1406,57 +1648,83 @@ async def get_card_lookup(
             market_price = float(converted_market_price) if converted_market_price is not None else None
             price_currency = display_currency
 
-        exact_reference = exact_cardmarket_references.get((set_code, print_card_number, rarity, print_language))
-        cardmarket_resolution = resolve_cardmarket_product_url(
-            locale=cardmarket_locale,
-            cardmarket_product_url=exact_reference,
-            cardmarket_product_slug=None,
-            cardmarket_set_slug=build_cardmarket_set_slug(cardmarket_set_name, set_code=set_code),
-            cardmarket_set_name=cardmarket_set_name,
-            cardmarket_product_name=english_product_name or remote_card.get("name"),
-            cardmarket_variant_name=None,
-            card_name=english_product_name or remote_card.get("name"),
-            has_multiple_variants=has_multiple_variants,
-            allow_fallback=False,
-        )
+        local_variant_candidates = exact_cardmarket_references.get((set_code, print_card_number, rarity, print_language), [])
+        resolution_inputs = local_variant_candidates or [None]
 
-        if cardmarket_resolution.mode in CARDMARKET_SAFE_MATCH_QUALITIES:
-            cardmarket_reference = cardmarket_resolution.url
-        else:
-            cardmarket_reference = exact_reference
-
-        if market_price is None and cardmarket_resolution.mode in {CARDMARKET_MATCH_AMBIGUOUS, CARDMARKET_MATCH_FAILED}:
-            price_source = default_price_source or "ygoprodeck:none"
-
-        print_options.append(
-            CardLookupPrintOption(
-                set_name=set_name,
-                set_code=set_code,
-                card_number=print_card_number,
-                rarity=rarity,
-                rarity_code=rarity_code,
-                cardmarket_product_url=cardmarket_resolution.url if cardmarket_resolution.mode in CARDMARKET_SAFE_MATCH_QUALITIES else None,
-                cardmarket_product_slug=cardmarket_resolution.product_slug if cardmarket_resolution.mode in CARDMARKET_SAFE_MATCH_QUALITIES else None,
-                cardmarket_set_slug=cardmarket_resolution.set_slug,
-                cardmarket_set_name=cardmarket_set_name,
-                cardmarket_product_name=cardmarket_resolution.product_name or english_product_name or remote_card.get("name"),
-                cardmarket_variant_name=cardmarket_resolution.variant_name,
-                cardmarket_category=CARDMARKET_CATEGORY,
-                cardmarket_match_quality=cardmarket_resolution.mode,
-                cardmarket_verified_at=cardmarket_resolution.verified_at,
-                market_price=market_price,
-                price_currency=price_currency,
-                price_source=price_source,
-                price_note=_price_note(
-                    price_source,
-                    multiple_prints=has_multiple_variants,
-                    has_cardmarket_reference=bool(cardmarket_reference),
+        for local_variant_candidate in resolution_inputs:
+            option_price_source = price_source
+            cardmarket_resolution = resolve_cardmarket_product_url(
+                locale=cardmarket_locale,
+                cardmarket_product_url=str(local_variant_candidate.get("url")) if local_variant_candidate else None,
+                cardmarket_product_slug=str(local_variant_candidate.get("product_slug")) if local_variant_candidate and local_variant_candidate.get("product_slug") else None,
+                cardmarket_set_slug=(
+                    str(local_variant_candidate.get("set_slug"))
+                    if local_variant_candidate and local_variant_candidate.get("set_slug")
+                    else build_cardmarket_set_slug(cardmarket_set_name, set_code=set_code)
                 ),
-                cardmarket_reference=cardmarket_reference,
-                ygoprodeck_id=remote_card.get("external_id"),
-                display_label=_build_print_label(set_name, set_code, rarity),
+                cardmarket_set_name=(
+                    str(local_variant_candidate.get("set_name"))
+                    if local_variant_candidate and local_variant_candidate.get("set_name")
+                    else cardmarket_set_name
+                ),
+                cardmarket_product_name=(
+                    str(local_variant_candidate.get("product_name"))
+                    if local_variant_candidate and local_variant_candidate.get("product_name")
+                    else english_product_name or remote_card.get("name")
+                ),
+                cardmarket_variant_name=(
+                    str(local_variant_candidate.get("variant_name"))
+                    if local_variant_candidate and local_variant_candidate.get("variant_name")
+                    else None
+                ),
+                card_name=english_product_name or remote_card.get("name"),
+                has_multiple_variants=has_multiple_variants or len(local_variant_candidates) > 1,
+                allow_fallback=False,
             )
-        )
+
+            if local_variant_candidate and local_variant_candidate.get("verified_at") and not cardmarket_resolution.verified_at:
+                try:
+                    cardmarket_resolution.verified_at = local_variant_candidate.get("verified_at")  # type: ignore[assignment]
+                except Exception:
+                    pass
+
+            if cardmarket_resolution.mode in CARDMARKET_SAFE_MATCH_QUALITIES:
+                cardmarket_reference = cardmarket_resolution.url
+            else:
+                cardmarket_reference = str(local_variant_candidate.get("url")) if local_variant_candidate and local_variant_candidate.get("url") else None
+
+            if market_price is None and cardmarket_resolution.mode in {CARDMARKET_MATCH_AMBIGUOUS, CARDMARKET_MATCH_FAILED}:
+                option_price_source = default_price_source or "ygoprodeck:none"
+
+            print_options.append(
+                CardLookupPrintOption(
+                    set_name=set_name,
+                    set_code=set_code,
+                    card_number=print_card_number,
+                    rarity=rarity,
+                    rarity_code=rarity_code,
+                    cardmarket_product_url=cardmarket_resolution.url if cardmarket_resolution.mode in CARDMARKET_SAFE_MATCH_QUALITIES else None,
+                    cardmarket_product_slug=cardmarket_resolution.product_slug if cardmarket_resolution.mode in CARDMARKET_SAFE_MATCH_QUALITIES else None,
+                    cardmarket_set_slug=cardmarket_resolution.set_slug,
+                    cardmarket_set_name=cardmarket_resolution.set_name or cardmarket_set_name,
+                    cardmarket_product_name=cardmarket_resolution.product_name or english_product_name or remote_card.get("name"),
+                    cardmarket_variant_name=cardmarket_resolution.variant_name,
+                    cardmarket_category=CARDMARKET_CATEGORY,
+                    cardmarket_match_quality=cardmarket_resolution.mode,
+                    cardmarket_verified_at=cardmarket_resolution.verified_at,
+                    market_price=market_price,
+                    price_currency=price_currency,
+                    price_source=option_price_source,
+                    price_note=_price_note(
+                        option_price_source,
+                        multiple_prints=has_multiple_variants or len(local_variant_candidates) > 1,
+                        has_cardmarket_reference=bool(cardmarket_reference),
+                    ),
+                    cardmarket_reference=cardmarket_reference,
+                    ygoprodeck_id=remote_card.get("external_id"),
+                    display_label=_build_print_label(set_name, set_code, rarity, cardmarket_resolution.variant_name),
+                )
+            )
 
     safe_default_market_price = default_market_price if len(print_options) <= 1 else None
     safe_default_price_currency = default_price_currency if safe_default_market_price is not None else None

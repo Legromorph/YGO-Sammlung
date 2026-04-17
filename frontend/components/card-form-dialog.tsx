@@ -46,6 +46,7 @@ type LookupSelection = {
   set_name?: string | null;
   set_code?: string | null;
   rarity?: string | null;
+  variant_key?: string | null;
 };
 
 type SetGroupOption = {
@@ -141,12 +142,74 @@ function buildSetGroupOptions(printOptions: CardLookupPrintOption[]): SetGroupOp
   return Array.from(groups.values()).sort((left, right) => left.label.localeCompare(right.label));
 }
 
+type PrintIdentitySource = Pick<
+  CardLookupPrintOption,
+  'set_name' | 'set_code' | 'rarity' | 'card_number' | 'cardmarket_variant_name' | 'cardmarket_product_slug' | 'cardmarket_product_url' | 'cardmarket_reference'
+>;
+
+function buildPrintIdentityKey(option: PrintIdentitySource): string {
+  return [
+    normalizeSetGroupKey(option),
+    trimValue(option.rarity),
+    trimValue(option.card_number),
+    trimValue(option.cardmarket_variant_name),
+    trimValue(option.cardmarket_product_slug),
+    trimValue(option.cardmarket_product_url || option.cardmarket_reference),
+  ].join('||');
+}
+
 function buildVariantKey(option: CardLookupPrintOption): string {
-  return [trimValue(option.set_name), trimValue(option.set_code), trimValue(option.rarity), trimValue(option.card_number)].join('||');
+  return buildPrintIdentityKey(option);
 }
 
 function buildVariantLabel(option: CardLookupPrintOption): string {
-  return [trimValue(option.rarity), trimValue(option.card_number), trimValue(option.set_code)].filter(Boolean).join(' | ') || option.display_label;
+  return [trimValue(option.cardmarket_variant_name), trimValue(option.rarity), trimValue(option.card_number), trimValue(option.set_code)].filter(Boolean).join(' | ') || option.display_label;
+}
+
+function buildLookupSelectionFromPrint(option: CardLookupPrintOption): LookupSelection {
+  return {
+    set_name: option.set_name ?? undefined,
+    set_code: option.set_code ?? undefined,
+    rarity: option.rarity ?? undefined,
+    variant_key: buildVariantKey(option),
+  };
+}
+
+function buildStoredVariantKey(form: CardPayload): string | undefined {
+  const hasVariantIdentity = trimValue(form.cardmarket_product_url || form.cardmarket_reference || form.cardmarket_product_slug || form.cardmarket_variant_name);
+  if (!hasVariantIdentity) {
+    return undefined;
+  }
+  return buildPrintIdentityKey({
+    set_name: form.set_name,
+    set_code: form.set_code,
+    rarity: form.rarity,
+    card_number: form.card_number,
+    cardmarket_variant_name: form.cardmarket_variant_name,
+    cardmarket_product_slug: form.cardmarket_product_slug,
+    cardmarket_product_url: form.cardmarket_product_url,
+    cardmarket_reference: form.cardmarket_reference,
+  });
+}
+
+function findPreferredImportedPrint(lookup: CardLookupResponse): CardLookupPrintOption | null {
+  const preferredUrl = trimValue(lookup.cardmarket_product_url || lookup.cardmarket_reference);
+  if (preferredUrl) {
+    const byUrl = lookup.print_options.find((option) => trimValue(option.cardmarket_product_url || option.cardmarket_reference) === preferredUrl);
+    if (byUrl) {
+      return byUrl;
+    }
+  }
+
+  const preferredSlug = trimValue(lookup.cardmarket_product_slug);
+  if (preferredSlug) {
+    const bySlug = lookup.print_options.find((option) => trimValue(option.cardmarket_product_slug) === preferredSlug);
+    if (bySlug) {
+      return bySlug;
+    }
+  }
+
+  return null;
 }
 
 function normalizeAutocompleteText(value?: string | null): string {
@@ -204,7 +267,7 @@ function getLanguageAwarePrintOptions(printOptions: CardLookupPrintOption[], lan
 
   const groupedOptions = new Map<string, CardLookupPrintOption[]>();
   for (const option of printOptions) {
-    const key = [normalizeSetGroupKey(option), trimValue(option.rarity), trimValue(option.card_number)].join('||');
+    const key = buildPrintIdentityKey(option);
     const existing = groupedOptions.get(key);
     if (existing) {
       existing.push(option);
@@ -220,7 +283,7 @@ function getLanguageAwarePrintOptions(printOptions: CardLookupPrintOption[], lan
   const seen = new Set<string>();
 
   return sourceOptions.filter((option) => {
-    const key = [trimValue(option.set_name), trimValue(option.set_code), trimValue(option.rarity), trimValue(option.card_number)].join('||');
+    const key = buildVariantKey(option);
     if (seen.has(key)) {
       return false;
     }
@@ -267,6 +330,9 @@ function filterPrintOptions(
   ignoreField?: keyof LookupSelection,
 ): CardLookupPrintOption[] {
   return printOptions.filter((option) => {
+    if (ignoreField !== 'variant_key' && selection.variant_key && buildVariantKey(option) !== selection.variant_key) {
+      return false;
+    }
     if (ignoreField !== 'set_name' && selection.set_name && option.set_name !== selection.set_name) {
       return false;
     }
@@ -281,6 +347,12 @@ function filterPrintOptions(
 }
 
 function resolveSelectedPrint(printOptions: CardLookupPrintOption[], selection: LookupSelection): CardLookupPrintOption | null {
+  if (selection.variant_key) {
+    const exactVariant = printOptions.find((option) => buildVariantKey(option) === selection.variant_key);
+    if (exactVariant) {
+      return exactVariant;
+    }
+  }
   const matches = filterPrintOptions(printOptions, selection);
   return matches.length === 1 ? matches[0] : null;
 }
@@ -290,10 +362,23 @@ function sanitizeSelection(printOptions: CardLookupPrintOption[], selection: Loo
     set_name: trimValue(selection.set_name),
     set_code: trimValue(selection.set_code),
     rarity: trimValue(selection.rarity),
+    variant_key: trimValue(selection.variant_key),
   };
 
   if (!printOptions.length) {
     return nextSelection;
+  }
+
+  if (nextSelection.variant_key) {
+    const exactVariant = printOptions.find((option) => buildVariantKey(option) === nextSelection.variant_key);
+    if (exactVariant) {
+      return {
+        set_name: exactVariant.set_name ?? undefined,
+        set_code: exactVariant.set_code ?? undefined,
+        rarity: exactVariant.rarity ?? undefined,
+        variant_key: buildVariantKey(exactVariant),
+      };
+    }
   }
 
   const availableSetNames = uniqueValues(filterPrintOptions(printOptions, nextSelection, 'set_name').map((option) => option.set_name));
@@ -311,12 +396,18 @@ function sanitizeSelection(printOptions: CardLookupPrintOption[], selection: Loo
     nextSelection.rarity = undefined;
   }
 
+  const availableVariantKeys = filterPrintOptions(printOptions, nextSelection, 'variant_key').map((option) => buildVariantKey(option));
+  if (nextSelection.variant_key && !availableVariantKeys.includes(nextSelection.variant_key)) {
+    nextSelection.variant_key = undefined;
+  }
+
   const resolvedPrint = resolveSelectedPrint(printOptions, nextSelection);
   if (resolvedPrint) {
     return {
       set_name: resolvedPrint.set_name ?? undefined,
       set_code: resolvedPrint.set_code ?? undefined,
       rarity: resolvedPrint.rarity ?? undefined,
+      variant_key: buildVariantKey(resolvedPrint),
     };
   }
 
@@ -502,8 +593,9 @@ export default function CardFormDialog({
       set_name: form.set_name,
       set_code: form.set_code,
       rarity: form.rarity,
+      variant_key: buildStoredVariantKey(form),
     }),
-    [form.rarity, form.set_code, form.set_name],
+    [form],
   );
   const setGroupOptions = useMemo(() => buildSetGroupOptions(printOptions), [printOptions]);
   const selectedSetGroupKey = useMemo(
@@ -564,6 +656,7 @@ export default function CardFormDialog({
         set_name: selectionPatch.set_name !== undefined ? selectionPatch.set_name : current.set_name,
         set_code: requestedSetCode,
         rarity: selectionPatch.rarity !== undefined ? selectionPatch.rarity : current.rarity,
+        variant_key: selectionPatch.variant_key !== undefined ? selectionPatch.variant_key : buildStoredVariantKey(current),
       });
       let nextPrint = resolveSelectedPrint(languageAwarePrintOptions, nextSelection);
 
@@ -663,7 +756,8 @@ export default function CardFormDialog({
           language: lookupLanguageQuery,
         },
       });
-      applyLookupPayload(response.data, {}, languageOverride);
+      const preferredImportedPrint = findPreferredImportedPrint(response.data);
+      applyLookupPayload(response.data, preferredImportedPrint ? { variant_key: buildVariantKey(preferredImportedPrint) } : {}, languageOverride);
       setCardmarketUrl(response.data.cardmarket_product_url || response.data.cardmarket_reference || url.trim());
       setLastImportedCardmarketUrl(response.data.cardmarket_product_url || response.data.cardmarket_reference || url.trim());
       if (response.data.ygoprodeck_id) {
@@ -773,6 +867,7 @@ export default function CardFormDialog({
       set_name: primaryOption.set_name || '',
       set_code: primaryOption.set_code || '',
       rarity: onlySet.options.length === 1 ? primaryOption.rarity || '' : '',
+      variant_key: '',
     });
   }, [lookupData, open, resolvedPrint, selectedSetGroup, setGroupOptions]);
 
@@ -842,6 +937,7 @@ export default function CardFormDialog({
       set_name: primaryOption.set_name || '',
       set_code: primaryOption.set_code || '',
       rarity: nextGroup.options.length === 1 ? primaryOption.rarity || '' : '',
+      variant_key: '',
     });
   };
 
@@ -855,11 +951,7 @@ export default function CardFormDialog({
       return;
     }
 
-    applyLookupPayload(lookupData, {
-      set_name: nextVariant.set_name || '',
-      set_code: nextVariant.set_code || '',
-      rarity: nextVariant.rarity || '',
-    });
+    applyLookupPayload(lookupData, buildLookupSelectionFromPrint(nextVariant));
   };
 
   const submitDisabled = loading || !form.name.trim() || Boolean(setCodeLanguageError) || Boolean(lookupData && printOptions.length > 1 && !resolvedPrint);
