@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import traceback
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable
 
@@ -34,6 +35,8 @@ CARDMARKET_SAFE_MATCH_QUALITIES = {
     "exact_verified_variant",
     "set_name_verified_name_only",
 }
+JOB_LOG_MAX_CHARS = 250_000
+JOB_LOG_EXCERPT_LIMIT = 220
 
 SyncHandler = Callable[[dict | None], Awaitable[dict]]
 
@@ -128,7 +131,144 @@ def _job_health(job: SyncJob, now: datetime | None = None) -> tuple[bool, str | 
     return False, None
 
 
-def serialize_sync_job(job: SyncJob) -> SyncJobResponse:
+def _format_job_log_value(value: object) -> str:
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _trim_job_excerpt(value: str | None) -> str | None:
+    if not value:
+        return None
+    compact = " ".join(str(value).split())
+    if len(compact) <= JOB_LOG_EXCERPT_LIMIT:
+        return compact
+    return f"{compact[:JOB_LOG_EXCERPT_LIMIT - 3].rstrip()}..."
+
+
+def _render_job_log_entry(level: str, message: str, *, context: dict[str, object] | None = None) -> str:
+    lines = [f"[{datetime.utcnow().isoformat(timespec='seconds')}Z] {level.upper():<7} {message}"]
+    for key, value in (context or {}).items():
+        if value in (None, "", [], {}, ()):
+            continue
+        rendered = _format_job_log_value(value)
+        if "\n" in rendered:
+            lines.append(f"  {key}:")
+            lines.extend(f"    {line}" for line in rendered.splitlines())
+        else:
+            lines.append(f"  {key}: {rendered}")
+    return "\n".join(lines)
+
+
+def _append_job_log_blob(existing: str | None, entry: str) -> str:
+    combined = entry if not existing else f"{existing.rstrip()}\n\n{entry}"
+    if len(combined) <= JOB_LOG_MAX_CHARS:
+        return combined
+
+    overflow_notice = "[... older job log lines truncated ...]\n"
+    kept_length = max(0, JOB_LOG_MAX_CHARS - len(overflow_notice))
+    trimmed = combined[-kept_length:].lstrip()
+    return f"{overflow_notice}{trimmed}"
+
+
+def _apply_job_log_update(
+    job: SyncJob,
+    *,
+    level: str,
+    message: str,
+    context: dict[str, object] | None = None,
+    excerpt: str | None = None,
+    reset: bool = False,
+) -> None:
+    entry = _render_job_log_entry(level, message, context=context)
+    job.log_details = entry if reset else _append_job_log_blob(job.log_details, entry)
+    trimmed_excerpt = _trim_job_excerpt(excerpt)
+    if trimmed_excerpt is not None:
+        job.log_excerpt = trimmed_excerpt
+
+
+async def _append_job_log(
+    job_id: int | None,
+    message: str,
+    *,
+    level: str = "INFO",
+    context: dict[str, object] | None = None,
+    excerpt: str | None = None,
+) -> None:
+    if not job_id:
+        return
+    async with session_scope() as db:
+        job = await db.get(SyncJob, job_id)
+        if not job:
+            return
+        _apply_job_log_update(job, level=level, message=message, context=context, excerpt=excerpt)
+
+
+def _build_price_item_context(
+    item: InventoryItem,
+    *,
+    provider_key: str,
+    card_mapping: SourceMapping | None = None,
+    print_mapping: SourceMapping | None = None,
+    cardmarket_mapping: SourceMapping | None = None,
+) -> dict[str, object]:
+    return {
+        "provider": provider_key,
+        "inventory_item_id": item.id,
+        "card_print_id": item.card_print_id,
+        "card_id": item.card_print.card.id,
+        "card_name": item.card_print.card.name,
+        "set_name": item.card_print.set_name,
+        "set_code": item.card_print.set_code,
+        "card_number": item.card_print.card_number,
+        "rarity": item.card_print.rarity,
+        "language": item.card_print.language,
+        "condition": item.condition,
+        "stored_cardmarket_reference": item.cardmarket_reference,
+        "stored_cardmarket_product_url": item.card_print.cardmarket_product_url,
+        "stored_cardmarket_match_quality": item.card_print.cardmarket_match_quality,
+        "provider_card_mapping": card_mapping.external_id if card_mapping else None,
+        "provider_print_mapping": print_mapping.external_id if print_mapping else None,
+        "cardmarket_mapping": cardmarket_mapping.external_id if cardmarket_mapping else None,
+    }
+
+
+def _build_snapshot_log_context(snapshot: object) -> dict[str, object]:
+    indicators = getattr(snapshot, "indicators", {}) or {}
+    return {
+        "source_key": getattr(snapshot, "source_key", None),
+        "provider_key": getattr(snapshot, "provider_key", None),
+        "market_price": getattr(snapshot, "market_price", None),
+        "currency": getattr(snapshot, "currency", None),
+        "match_quality": getattr(snapshot, "match_quality", None),
+        "note": getattr(snapshot, "note", None),
+        "cardmarket_reference": getattr(snapshot, "cardmarket_reference", None),
+        "snapshot_indicators": indicators,
+    }
+
+
+def _build_completion_excerpt(summary: dict) -> str:
+    parts: list[str] = []
+    for key, label in (
+        ("updated_items", "aktualisiert"),
+        ("unresolved_items", "offen"),
+        ("failed_items", "fehlerhaft"),
+        ("matched_items", "treffer"),
+        ("downloaded_images", "Bilder"),
+        ("synced_cards", "Karten"),
+        ("recalculated_items", "neu berechnet"),
+    ):
+        value = summary.get(key)
+        if isinstance(value, int):
+            parts.append(f"{value} {label}")
+    if not parts:
+        return "Job abgeschlossen."
+    return f"Abgeschlossen: {', '.join(parts)}."
+
+
+def serialize_sync_job(job: SyncJob, *, include_details: bool = False) -> SyncJobResponse:
     is_stuck, stuck_reason = _job_health(job)
     return SyncJobResponse(
         id=job.id,
@@ -139,6 +279,7 @@ def serialize_sync_job(job: SyncJob) -> SyncJobResponse:
         priority=job.priority or 0,
         payload=job.payload,
         log_excerpt=job.log_excerpt,
+        log_details=job.log_details if include_details else None,
         error_message=job.error_message,
         started_at=job.started_at,
         completed_at=job.completed_at,
@@ -197,7 +338,18 @@ async def create_sync_job_record(
                         existing.payload = existing_payload
                         updated_existing = True
                     if updated_existing and existing.status == "pending":
-                        existing.log_excerpt = "Rescheduled by a newer price update request."
+                        _apply_job_log_update(
+                            existing,
+                            level="INFO",
+                            message="Pending job was rescheduled by a newer price update request.",
+                            context={
+                                "lock_key": existing.lock_key,
+                                "priority": existing.priority,
+                                "available_at": existing.available_at.isoformat() if existing.available_at else None,
+                                "payload": existing.payload,
+                            },
+                            excerpt="Rescheduled by a newer price update request.",
+                        )
                     logger.info(
                         "Reusing %s job %s for overlapping payload inventory=%s prints=%s",
                         job_type,
@@ -219,7 +371,6 @@ async def create_sync_job_record(
         available_at=available_at,
         priority=priority,
         payload=payload,
-        log_excerpt="Pending worker claim.",
         total_items=0,
         processed_items=0,
         successful_items=0,
@@ -227,6 +378,21 @@ async def create_sync_job_record(
     )
     db.add(job)
     await db.flush()
+    _apply_job_log_update(
+        job,
+        level="INFO",
+        message="Job queued and waiting for worker claim.",
+        context={
+            "job_type": job_type,
+            "provider_key": provider_key,
+            "lock_key": lock_key,
+            "priority": priority,
+            "available_at": available_at.isoformat() if available_at else None,
+            "payload": payload,
+        },
+        excerpt="Pending worker claim.",
+        reset=True,
+    )
     logger.info("Created %s job %s with lock %s", job_type, job.id, lock_key)
     return job, True
 
@@ -299,11 +465,11 @@ async def queue_price_update_job(
     )
 
 
-async def get_sync_job(db: AsyncSession, job_id: int) -> SyncJobResponse | None:
+async def get_sync_job(db: AsyncSession, job_id: int, *, include_details: bool = False) -> SyncJobResponse | None:
     job = await db.get(SyncJob, job_id)
     if not job:
         return None
-    return serialize_sync_job(job)
+    return serialize_sync_job(job, include_details=include_details)
 
 
 async def list_sync_jobs(
@@ -400,7 +566,16 @@ async def fail_stale_running_jobs() -> int:
                 "Worker timeout: job exceeded "
                 f"{settings.sync_job_running_timeout_minutes} minutes without completion."
             )
-            job.log_excerpt = "Marked as failed by stale-job recovery."
+            _apply_job_log_update(
+                job,
+                level="ERROR",
+                message="Stale running job was force-failed by timeout recovery.",
+                context={
+                    "started_at": job.started_at.isoformat() if job.started_at else None,
+                    "timeout_minutes": settings.sync_job_running_timeout_minutes,
+                },
+                excerpt="Marked as failed by stale-job recovery.",
+            )
             failed_count += 1
 
     if failed_count:
@@ -437,7 +612,6 @@ async def claim_next_sync_job(*, worker_name: str) -> SyncJob | None:
         job.started_at = datetime.utcnow()
         job.completed_at = None
         job.error_message = None
-        job.log_excerpt = f"Claimed by {worker_name}."
         if job.total_items is None:
             job.total_items = 0
         if job.processed_items is None:
@@ -446,6 +620,13 @@ async def claim_next_sync_job(*, worker_name: str) -> SyncJob | None:
             job.successful_items = 0
         if job.failed_items is None:
             job.failed_items = 0
+        _apply_job_log_update(
+            job,
+            level="INFO",
+            message="Worker claimed job.",
+            context={"worker_name": worker_name},
+            excerpt=f"Claimed by {worker_name}.",
+        )
         await db.flush()
 
     logger.info("Claimed pending job %s of type %s", job.id, job.job_type)
@@ -468,7 +649,6 @@ async def _claim_job_by_id(job_id: int, *, worker_name: str) -> SyncJob | None:
             job.started_at = datetime.utcnow()
             job.completed_at = None
             job.error_message = None
-            job.log_excerpt = f"Claimed directly by {worker_name}."
             if job.total_items is None:
                 job.total_items = 0
             if job.processed_items is None:
@@ -477,6 +657,13 @@ async def _claim_job_by_id(job_id: int, *, worker_name: str) -> SyncJob | None:
                 job.successful_items = 0
             if job.failed_items is None:
                 job.failed_items = 0
+            _apply_job_log_update(
+                job,
+                level="INFO",
+                message="Job was claimed for direct execution.",
+                context={"worker_name": worker_name},
+                excerpt=f"Claimed directly by {worker_name}.",
+            )
             await db.flush()
             logger.info("Claimed specific pending job %s of type %s", job.id, job.job_type)
             return job
@@ -510,12 +697,24 @@ async def _complete_job(job_id: int, summary: dict) -> None:
         job.status = "completed"
         job.completed_at = datetime.utcnow()
         job.error_message = None
-        job.log_excerpt = json.dumps(summary, ensure_ascii=True)
+        _apply_job_log_update(
+            job,
+            level="INFO",
+            message="Job completed successfully.",
+            context={"summary": summary},
+            excerpt=_build_completion_excerpt(summary),
+        )
 
     logger.info("Completed job %s", job_id)
 
 
-async def _fail_job(job_id: int, error_message: str) -> None:
+async def _fail_job(
+    job_id: int,
+    error_message: str,
+    *,
+    context: dict[str, object] | None = None,
+    traceback_text: str | None = None,
+) -> None:
     async with session_scope() as db:
         job = await db.get(SyncJob, job_id)
         if not job:
@@ -524,7 +723,17 @@ async def _fail_job(job_id: int, error_message: str) -> None:
         job.status = "failed"
         job.completed_at = datetime.utcnow()
         job.error_message = error_message
-        job.log_excerpt = "Job failed."
+        failure_context = dict(context or {})
+        failure_context["error_message"] = error_message
+        if traceback_text:
+            failure_context["traceback"] = traceback_text
+        _apply_job_log_update(
+            job,
+            level="ERROR",
+            message="Job failed.",
+            context=failure_context,
+            excerpt=error_message or "Job failed.",
+        )
 
     logger.error("Failed job %s: %s", job_id, error_message)
 
@@ -563,11 +772,30 @@ async def process_claimed_sync_job(job_id: int, *, worker_name: str) -> None:
     handler_payload["_job_id"] = job_id
 
     try:
+        await _append_job_log(
+            job_id,
+            "Worker started job execution.",
+            context={
+                "worker_name": worker_name,
+                "job_type": job_type,
+                "payload": payload,
+            },
+            excerpt=f"Running on {worker_name}.",
+        )
         summary = await handler(handler_payload)
         await _complete_job(job_id, summary)
     except Exception as exc:
         logger.exception("Exception while processing job %s of type %s", job_id, job_type)
-        await _fail_job(job_id, str(exc))
+        await _fail_job(
+            job_id,
+            str(exc),
+            context={
+                "worker_name": worker_name,
+                "job_type": job_type,
+                "payload": payload,
+            },
+            traceback_text="".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        )
 
 
 async def execute_sync_job(job_id: int) -> None:
@@ -702,6 +930,20 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
         inventory_item_ids,
         card_print_ids,
     )
+    await _append_job_log(
+        job_id,
+        "Preparing price update run.",
+        context={
+            "provider": provider.provider_key,
+            "trigger": payload.get("trigger") if payload else None,
+            "reason": payload.get("reason") if payload else None,
+            "inventory_item_ids": inventory_item_ids,
+            "card_print_ids": card_print_ids,
+            "price_lookup_timeout_seconds": price_lookup_timeout_seconds,
+            "manual_rate_limit_per_minute": 5 if is_manual_trigger else None,
+        },
+        excerpt="Preparing price update.",
+    )
 
     async with session_scope() as db:
         stmt = (
@@ -723,6 +965,16 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
         items = result.scalars().unique().all()
         if not items:
             logger.warning("Price update payload matched no inventory items.")
+            await _append_job_log(
+                job_id,
+                "Price update payload matched no inventory items.",
+                level="WARNING",
+                context={
+                    "requested_inventory_items": inventory_item_ids,
+                    "requested_card_prints": card_print_ids,
+                },
+                excerpt="No inventory items matched payload.",
+            )
             await _persist_job_progress(
                 job_id,
                 total_items=0,
@@ -744,6 +996,15 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
         processed_items = 0
         successful_items = 0
         failed_items_progress = 0
+        await _append_job_log(
+            job_id,
+            "Resolved inventory items for price update.",
+            context={
+                "matched_items": len(items),
+                "inventory_item_ids": [item.id for item in items],
+            },
+            excerpt=f"Processing {len(items)} inventory item(s).",
+        )
         await _persist_job_progress(
             job_id,
             total_items=len(items),
@@ -765,6 +1026,13 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                 card_mapping = await _find_mapping(db, "card", card.id, provider.provider_key)
                 print_mapping = await _find_mapping(db, "card_print", item.card_print_id, provider.provider_key)
                 cardmarket_mapping = await _find_mapping(db, "card_print", item.card_print_id, "cardmarket")
+                item_context = _build_price_item_context(
+                    item,
+                    provider_key=provider.provider_key,
+                    card_mapping=card_mapping,
+                    print_mapping=print_mapping,
+                    cardmarket_mapping=cardmarket_mapping,
+                )
                 snapshot = None
                 primary_provider_error: Exception | None = None
                 try:
@@ -798,6 +1066,13 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                     raise primary_provider_error
                 if not snapshot:
                     logger.warning("Price provider returned no snapshot for inventory item %s", item.id)
+                    await _append_job_log(
+                        job_id,
+                        "Price provider returned no snapshot.",
+                        level="WARNING",
+                        context=item_context,
+                        excerpt=f"Item {item.id}: provider returned no snapshot.",
+                    )
                     unresolved += 1
                     processed_items += 1
                     failed_items_progress += 1
@@ -827,6 +1102,7 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                     snapshot.market_price,
                     f" {snapshot.currency}" if snapshot.market_price is not None else "",
                 )
+                snapshot_context = _build_snapshot_log_context(snapshot)
 
                 item.last_price_source = snapshot.source_key
                 item.last_priced_at = now
@@ -871,6 +1147,13 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                         item.id,
                         item.card_print.card.name,
                         snapshot.note or snapshot.match_quality or "no price",
+                    )
+                    await _append_job_log(
+                        job_id,
+                        "Price lookup completed without a usable market price.",
+                        level="WARNING",
+                        context={**item_context, **snapshot_context},
+                        excerpt=f"Item {item.id}: no market price from {provider.provider_key}.",
                     )
                     unresolved += 1
                     processed_items += 1
@@ -928,6 +1211,11 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                     current_currency=snapshot.currency,
                     checked_at=now,
                 )
+                await _append_job_log(
+                    job_id,
+                    "Stored fresh market price for inventory item.",
+                    context={**item_context, **snapshot_context},
+                )
                 updated += 1
                 processed_items += 1
                 successful_items += 1
@@ -940,6 +1228,17 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                 )
             except Exception as exc:
                 logger.exception("Price update failed for inventory item %s: %s", item.id, exc)
+                await _append_job_log(
+                    job_id,
+                    "Price update failed for inventory item.",
+                    level="ERROR",
+                    context={
+                        **locals().get("item_context", {"inventory_item_id": item.id}),
+                        "error_message": str(exc),
+                        "traceback": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                    },
+                    excerpt=f"Item {item.id} failed: {str(exc)}",
+                )
                 unresolved += 1
                 failed += 1
                 processed_items += 1
