@@ -13,7 +13,7 @@ class OrmSchema(BaseModel):
 class AppSettingsPayload(BaseModel):
     preferred_currency: str = "EUR"
     preferred_card_language: str = "de"
-    preferred_search_language: str = "de"
+    preferred_search_language: str = "de,en"
     preferred_price_language: str = "de"
 
 
@@ -66,14 +66,18 @@ class PriceHistoryPoint(BaseModel):
     language: str | None = None
     lowest_offer_price: float | None = None
     selected_market_price: float | None = None
+    market_price_median_top5: float | None = None
     pricing_strategy_used: str | None = None
     offer_count_considered: int | None = None
+    offers_considered_count: int | None = None
     outlier_detected: bool | None = None
     price_trend: float | None = None
     avg_1d: float | None = None
     avg_7d: float | None = None
     avg_30d: float | None = None
     filters_used: dict[str, Any] | None = None
+    parse_status: str | None = None
+    top5_offer_prices: list[float] = Field(default_factory=list)
     raw_offer_prices_sample: list[float] = Field(default_factory=list)
 
 
@@ -230,6 +234,7 @@ class CardPayload(BaseModel):
     pendulum_scale: int | None = None
     pendulum_effect: str | None = None
     spell_trap_type: str | None = None
+    increment_existing_quantity_on_duplicate: bool = False
 
 
 class CardSummary(BaseModel):
@@ -395,6 +400,14 @@ class SyncJobResponse(BaseModel):
     rate_limit_per_minute: int | None = None
 
 
+class BulkSetImportAllocationLine(BaseModel):
+    inventory_item_id: int
+    card_print_id: int
+    quantity: int
+    allocated_purchase_price_per_unit: float | None = None
+    allocated_purchase_total: float
+
+
 class BulkSetImportResponse(BaseModel):
     purchase_batch_id: int
     created_items: int
@@ -404,9 +417,12 @@ class BulkSetImportResponse(BaseModel):
     imported_inventory_item_ids: list[int] = Field(default_factory=list)
     imported_card_print_ids: list[int] = Field(default_factory=list)
     display_total_price: float
+    purchase_batch_total_price: float
     currency: str
     allocated_unit_price: float | None = None
     total_allocated_price: float
+    allocation_difference: float = 0.0
+    allocation_lines: list[BulkSetImportAllocationLine] = Field(default_factory=list)
     rounding_remainder_cents: int = 0
     price_sync_job: SyncJobResponse | None = None
     price_sync_job_error: str | None = None
