@@ -41,6 +41,16 @@ def _to_float(value: Decimal | float | int | None) -> float | None:
     return float(value)
 
 
+def _expected_card_count(card_set: CardSet) -> int:
+    payload_count = 0
+    try:
+        payload_count = int((card_set.source_payload or {}).get("num_of_cards") or 0)
+    except (TypeError, ValueError):
+        payload_count = 0
+    direct_count = int(card_set.card_count or 0)
+    return max(payload_count, direct_count)
+
+
 def _allocate_display_total(display_total_price: Decimal, selected_lines: list[tuple[int, int]]) -> tuple[list[AllocationLine], Decimal | None, int]:
     total_quantity = sum(quantity for _, quantity in selected_lines)
     if total_quantity <= 0:
@@ -82,7 +92,15 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
     if not card_set:
         raise ValueError("Set not found.")
 
-    await sync_card_set_cards(db, card_set, language=payload.language)
+    requested_language = (payload.language or "de").strip().lower() or "de"
+    await sync_card_set_cards(db, card_set, language=requested_language)
+    expected_card_count = _expected_card_count(card_set)
+    loaded_card_count = int(card_set.loaded_card_count or 0)
+    if expected_card_count > 0 and loaded_card_count < expected_card_count:
+        raise ValueError(
+            f"Das Set '{card_set.name}' ist noch unvollstaendig geladen ({loaded_card_count}/{expected_card_count} Karten). "
+            f"{card_set.sync_warning or 'Bitte Set-Sync pruefen und danach erneut importieren.'}"
+        )
 
     selected_quantities: dict[int, int] = {}
     for item in payload.items:
@@ -106,6 +124,13 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
     missing_ids = sorted(set(selected_print_ids) - set(prints_by_id))
     if missing_ids:
         raise ValueError("Mindestens eine ausgewaehlte Karte gehoert nicht zum Set.")
+
+    language_mismatches = sorted(card_print.id for card_print in card_prints if (card_print.language or "").lower() != requested_language)
+    if language_mismatches:
+        raise ValueError(
+            f"Die ausgewaehlte Sprache '{requested_language.upper()}' passt nicht zu mindestens einem Print. "
+            "Bitte Kartenliste in derselben Sprache laden und erneut auswaehlen."
+        )
 
     mapping_result = await db.execute(
         select(SourceMapping).where(
@@ -149,6 +174,7 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
     allocations, average_unit_price, remainder_cents = _allocate_display_total(display_total_price, ordered_lines)
     total_quantity = sum(line.quantity for line in allocations)
     total_allocated_price = sum((line.line_total for line in allocations), Decimal("0.00"))
+    allocation_difference = (display_total_price - total_allocated_price).quantize(TWO_DP, rounding=ROUND_HALF_UP)
     normalized_notes = _normalize_note(payload.notes)
     now = datetime.utcnow()
 
@@ -157,7 +183,7 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
         label=card_set.name,
         set_id=card_set.id,
         storage_location_id=payload.storage_location_id,
-        language=payload.language,
+        language=requested_language,
         condition=payload.condition,
         total_price=display_total_price,
         currency=payload.currency,
@@ -167,9 +193,12 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
         notes=normalized_notes,
         payload={
             "set_code": card_set.set_code,
-            "expected_card_count": card_set.card_count or 0,
-            "requested_language": payload.language,
+            "expected_card_count": expected_card_count,
+            "loaded_card_count": loaded_card_count,
+            "requested_language": requested_language,
             "line_count": len(allocations),
+            "display_total_price": _to_float(display_total_price),
+            "allocation_difference": _to_float(allocation_difference),
         },
     )
     db.add(purchase_batch)
@@ -178,6 +207,7 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
     created_items = 0
     imported_inventory_item_ids: list[int] = []
     imported_card_print_ids: list[int] = []
+    allocation_lines: list[dict[str, float | int | None]] = []
     for allocation in allocations:
         card_print = prints_by_id[allocation.card_print_id]
         mapping_bundle = mappings_by_print.get(card_print.id, {})
@@ -223,6 +253,15 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
         created_items += 1
         imported_inventory_item_ids.append(inventory_item.id)
         imported_card_print_ids.append(card_print.id)
+        allocation_lines.append(
+            {
+                "inventory_item_id": inventory_item.id,
+                "card_print_id": card_print.id,
+                "quantity": allocation.quantity,
+                "allocated_purchase_price_per_unit": _to_float(allocation.unit_price),
+                "allocated_purchase_total": _to_float(allocation.line_total) or 0.0,
+            }
+        )
 
         db.add(
             PurchaseBatchItem(
@@ -270,8 +309,11 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
         imported_inventory_item_ids=imported_inventory_item_ids,
         imported_card_print_ids=imported_card_print_ids,
         display_total_price=_to_float(display_total_price) or 0.0,
+        purchase_batch_total_price=_to_float(display_total_price) or 0.0,
         currency=payload.currency,
         allocated_unit_price=_to_float(average_unit_price),
         total_allocated_price=_to_float(total_allocated_price) or 0.0,
+        allocation_difference=_to_float(allocation_difference) or 0.0,
+        allocation_lines=allocation_lines,
         rounding_remainder_cents=remainder_cents,
     )
