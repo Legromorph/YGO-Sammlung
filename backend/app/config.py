@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     price_monitor_jitter_seconds: int = 90
     price_monitor_min_interval_hours: int = 6
     price_monitor_default_interval_hours: int = 24
+    price_monitor_volatile_interval_hours: int = 12
     price_monitor_stable_interval_hours: int = 48
     price_monitor_very_stable_interval_hours: int = 96
     price_monitor_max_interval_hours: int = 96
@@ -65,6 +66,7 @@ class Settings(BaseSettings):
     trend_sync_interval_minutes: int = 180
     card_data_sync_interval_minutes: int = 1440
     sync_worker_poll_seconds: int = 3
+    sync_worker_max_parallel_jobs: int = 4
     sync_scheduler_poll_seconds: int = 30
     sync_job_running_timeout_minutes: int = 30
     sync_job_pending_warning_minutes: int = 5
