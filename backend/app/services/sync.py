@@ -29,6 +29,11 @@ JOB_PROVIDER_MAP = {
     "trend_rebuild": "internal",
     "card_data_sync": "ygoprodeck",
 }
+CARDMARKET_SAFE_MATCH_QUALITIES = {
+    "exact_verified",
+    "exact_verified_variant",
+    "set_name_verified_name_only",
+}
 
 SyncHandler = Callable[[dict | None], Awaitable[dict]]
 
@@ -160,6 +165,9 @@ async def create_sync_job_record(
     priority: int = 0,
 ) -> tuple[SyncJob, bool]:
     provider_key = JOB_PROVIDER_MAP.get(job_type)
+    if job_type == "price_update":
+        active_provider = get_active_price_provider()
+        provider_key = active_provider.provider_key if active_provider else provider_key
     lock_key = _build_job_lock_key(job_type, payload)
 
     if not force:
@@ -683,9 +691,6 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
     provider = get_active_price_provider()
     if not provider:
         raise RuntimeError("Missing active price provider.")
-    fallback_provider = None
-    if provider.provider_key == "cardmarket":
-        fallback_provider = next((candidate for candidate in get_price_providers() if candidate.provider_key == "ygoprodeck"), None)
     price_lookup_timeout_seconds = max(20, settings.request_timeout_seconds * 2)
 
     updated = 0
@@ -789,52 +794,6 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                         exc,
                     )
 
-                if (not snapshot or snapshot.market_price is None) and fallback_provider:
-                    fallback_card_mapping = await _find_mapping(db, "card", card.id, fallback_provider.provider_key)
-                    fallback_print_mapping = await _find_mapping(db, "card_print", item.card_print_id, fallback_provider.provider_key)
-                    try:
-                        fallback_snapshot = await asyncio.wait_for(
-                            fallback_provider.fetch_price(
-                                card,
-                                item.card_print,
-                                item.condition,
-                                card_mapping=fallback_card_mapping,
-                                print_mapping=fallback_print_mapping,
-                                cardmarket_mapping=cardmarket_mapping,
-                                cardmarket_reference=item.cardmarket_reference,
-                            ),
-                            timeout=price_lookup_timeout_seconds,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "Fallback provider '%s' timed out after %ss for inventory item %s",
-                            fallback_provider.provider_key,
-                            price_lookup_timeout_seconds,
-                            item.id,
-                        )
-                        fallback_snapshot = None
-                    except Exception as exc:
-                        logger.warning(
-                            "Fallback provider '%s' failed for inventory item %s: %s",
-                            fallback_provider.provider_key,
-                            item.id,
-                            exc,
-                        )
-                        fallback_snapshot = None
-
-                    if fallback_snapshot and fallback_snapshot.market_price is not None:
-                        fallback_snapshot.note = (
-                            f"{fallback_snapshot.note} Cardmarket lieferte keinen verwertbaren Preis; YGOPRODeck-Fallback wurde genutzt."
-                            if fallback_snapshot.note
-                            else "Cardmarket lieferte keinen verwertbaren Preis; YGOPRODeck-Fallback wurde genutzt."
-                        )
-                        fallback_snapshot.indicators = {
-                            **(fallback_snapshot.indicators or {}),
-                            "fallback_from_provider": provider.provider_key,
-                            "fallback_to_provider": fallback_provider.provider_key,
-                        }
-                        snapshot = fallback_snapshot
-
                 if snapshot is None and primary_provider_error:
                     raise primary_provider_error
                 if not snapshot:
@@ -873,8 +832,38 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
                 item.last_priced_at = now
                 item.last_price_match_quality = snapshot.match_quality
                 item.last_price_note = snapshot.note
-                if snapshot.cardmarket_reference:
+                resolved_match_quality = snapshot.indicators.get("resolved_cardmarket_match_quality") or snapshot.match_quality
+                has_verified_cardmarket_product = str(resolved_match_quality or "") in CARDMARKET_SAFE_MATCH_QUALITIES
+                if has_verified_cardmarket_product and snapshot.cardmarket_reference:
                     item.cardmarket_reference = snapshot.cardmarket_reference
+                resolved_product_url = snapshot.indicators.get("resolved_cardmarket_product_url")
+                if not resolved_product_url and has_verified_cardmarket_product and snapshot.cardmarket_reference:
+                    resolved_product_url = snapshot.cardmarket_reference
+                if has_verified_cardmarket_product and resolved_product_url:
+                    item.card_print.cardmarket_product_url = str(resolved_product_url)
+                resolved_product_slug = snapshot.indicators.get("resolved_cardmarket_product_slug")
+                if has_verified_cardmarket_product and resolved_product_slug:
+                    item.card_print.cardmarket_product_slug = str(resolved_product_slug)
+                resolved_set_slug = snapshot.indicators.get("resolved_cardmarket_set_slug")
+                if has_verified_cardmarket_product and resolved_set_slug:
+                    item.card_print.cardmarket_set_slug = str(resolved_set_slug)
+                resolved_product_name = snapshot.indicators.get("resolved_cardmarket_product_name")
+                if has_verified_cardmarket_product and resolved_product_name:
+                    item.card_print.cardmarket_product_name = str(resolved_product_name)
+                resolved_set_name = snapshot.indicators.get("resolved_cardmarket_set_name")
+                if has_verified_cardmarket_product and resolved_set_name:
+                    item.card_print.cardmarket_set_name = str(resolved_set_name)
+                resolved_variant_name = snapshot.indicators.get("resolved_cardmarket_variant_name")
+                if has_verified_cardmarket_product and resolved_variant_name:
+                    item.card_print.cardmarket_variant_name = str(resolved_variant_name)
+                if has_verified_cardmarket_product and resolved_match_quality:
+                    item.card_print.cardmarket_match_quality = str(resolved_match_quality)
+                resolved_verified_at = snapshot.indicators.get("resolved_cardmarket_verified_at")
+                if has_verified_cardmarket_product and isinstance(resolved_verified_at, str) and resolved_verified_at:
+                    try:
+                        item.card_print.cardmarket_verified_at = datetime.fromisoformat(resolved_verified_at)
+                    except ValueError:
+                        logger.warning("Invalid resolved_cardmarket_verified_at for inventory item %s: %s", item.id, resolved_verified_at)
 
                 if snapshot.market_price is None:
                     logger.warning(
@@ -977,23 +966,32 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
 
 
 async def _run_image_sync(payload: dict | None = None) -> dict:
-    del payload
+    target_inventory_item_ids, target_card_print_ids = _extract_price_targets(payload)
     provider = get_active_image_provider()
     downloaded = 0
     async with session_scope() as db:
-        result = await db.execute(
+        stmt = (
             select(CardPrint)
             .join(CardPrint.inventory_items)
             .options(selectinload(CardPrint.card), selectinload(CardPrint.image_assets))
             .order_by(CardPrint.updated_at.desc())
         )
+        target_filters = []
+        if target_card_print_ids:
+            target_filters.append(CardPrint.id.in_(target_card_print_ids))
+        if target_inventory_item_ids:
+            target_filters.append(InventoryItem.id.in_(target_inventory_item_ids))
+        if target_filters:
+            stmt = stmt.where(or_(*target_filters))
+
+        result = await db.execute(stmt)
         prints = result.scalars().unique().all()
         for card_print in prints:
             if any(asset.status == "downloaded" and asset.local_path for asset in card_print.image_assets):
                 continue
             mapping = await _find_mapping(db, "card_print", card_print.id, provider.provider_key)
-            payload = await provider.download_image(card_print.card, card_print, mapping)
-            if not payload:
+            image_payload = await provider.download_image(card_print.card, card_print, mapping)
+            if not image_payload:
                 asset = card_print.image_assets[0] if card_print.image_assets else ImageAsset(card_print_id=card_print.id, provider_key=provider.provider_key)
                 asset.status = "failed"
                 asset.last_error = "No remote image available."
@@ -1004,16 +1002,16 @@ async def _run_image_sync(payload: dict | None = None) -> dict:
             if not asset:
                 asset = ImageAsset(card_print_id=card_print.id, provider_key=provider.provider_key)
                 db.add(asset)
-            asset.remote_url = payload.remote_url
-            asset.local_path = payload.local_path
-            asset.thumbnail_path = payload.thumbnail_path
-            asset.content_hash = payload.content_hash
-            asset.width = payload.width
-            asset.height = payload.height
+            asset.remote_url = image_payload.remote_url
+            asset.local_path = image_payload.local_path
+            asset.thumbnail_path = image_payload.thumbnail_path
+            asset.content_hash = image_payload.content_hash
+            asset.width = image_payload.width
+            asset.height = image_payload.height
             asset.status = "downloaded"
             asset.last_error = None
             asset.downloaded_at = datetime.utcnow()
-            card_print.remote_image_url = payload.remote_url
+            card_print.remote_image_url = image_payload.remote_url
             downloaded += 1
 
     logger.info("Image sync downloaded %s image(s)", downloaded)
