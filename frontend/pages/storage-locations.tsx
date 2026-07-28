@@ -5,6 +5,7 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import { Alert, Box, Button, CircularProgress, Grid, IconButton, Paper, Stack, Typography } from '@mui/material';
 
 import StorageLocationDialog from '../components/storage-location-dialog';
+import PageHeader from '../components/page-header';
 import api, { getApiErrorMessage } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { StorageLocation } from '../lib/types';
@@ -60,7 +61,7 @@ export default function StorageLocationsPage() {
   };
 
   const handleDelete = async (locationId: number) => {
-    if (!window.confirm('Diesen Lagerort wirklich loeschen?')) {
+    if (!window.confirm('Diesen Lagerort wirklich löschen?')) {
       return;
     }
     try {
@@ -73,24 +74,22 @@ export default function StorageLocationsPage() {
 
   return (
     <Stack spacing={3}>
-      <Paper sx={{ p: 3, display: 'flex', justifyContent: 'space-between', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Box>
-          <Typography variant="h4">Physische Lagerorte</Typography>
-          <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-            Hierarchische Lagerorte wie Binder, Seiten, Boxen und Regalflaechen.
-          </Typography>
-        </Box>
-        <Button
-          variant="contained"
-          startIcon={<AddRoundedIcon />}
-          onClick={() => {
-            setEditingLocation(null);
-            setDialogOpen(true);
-          }}
-        >
-          Lagerort anlegen
-        </Button>
-      </Paper>
+      <PageHeader
+        title="Lagerorte"
+        description="Binder, Boxen und Regale strukturieren."
+        action={
+          <Button
+            variant="contained"
+            startIcon={<AddRoundedIcon />}
+            onClick={() => {
+              setEditingLocation(null);
+              setDialogOpen(true);
+            }}
+          >
+            Lagerort anlegen
+          </Button>
+        }
+      />
 
       {error ? <Alert severity="error">{error}</Alert> : null}
 

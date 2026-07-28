@@ -1,3 +1,5 @@
+export type CanonicalCardKind = 'monster' | 'spell' | 'trap' | 'skill' | 'token' | 'other';
+
 export interface StorageLocation {
   id: number;
   name: string;
@@ -111,6 +113,7 @@ export interface CardLookupSuggestion {
   external_id: string;
   name: string;
   card_type?: string | null;
+  card_kind: CanonicalCardKind;
   attribute?: string | null;
   monster_type?: string | null;
   image_url?: string | null;
@@ -149,6 +152,7 @@ export interface CardLookupResponse {
   name: string;
   effect_text?: string | null;
   card_type?: string | null;
+  card_kind: CanonicalCardKind;
   subtype?: string | null;
   attribute?: string | null;
   monster_type?: string | null;
@@ -202,6 +206,7 @@ export interface CardSummary {
   price_change_30d?: number | null;
   trend_score?: number | null;
   card_type?: string | null;
+  card_kind: CanonicalCardKind;
   attribute?: string | null;
   monster_type?: string | null;
   atk?: number | null;
@@ -225,6 +230,8 @@ export interface CardSummary {
 }
 
 export interface CardDetail extends CardSummary {
+  stored_market_price?: number | null;
+  stored_price_currency?: string | null;
   effect_text?: string | null;
   subtype?: string | null;
   archetype?: string | null;
@@ -293,6 +300,7 @@ export interface SetCardRow {
   set_code?: string | null;
   rarity?: string | null;
   card_type?: string | null;
+  card_kind: CanonicalCardKind;
   image_url: string;
   existing_quantity: number;
   current_market_price?: number | null;
@@ -365,6 +373,9 @@ export interface CardPayload {
   purchase_price?: number | null;
   current_market_price?: number | null;
   current_price_currency: string;
+  current_price_source?: string | null;
+  current_price_match_quality?: string | null;
+  current_price_note?: string | null;
   storage_location_id?: number | null;
   cardmarket_reference?: string | null;
   cardmarket_product_url?: string | null;
@@ -374,8 +385,6 @@ export interface CardPayload {
   cardmarket_product_name?: string | null;
   cardmarket_variant_name?: string | null;
   cardmarket_category?: string | null;
-  cardmarket_match_quality?: string | null;
-  cardmarket_verified_at?: string | null;
   cardmarket_expected_rarity?: string | null;
   cardmarket_expected_language?: string | null;
   cardmarket_expected_set_name?: string | null;
@@ -384,6 +393,7 @@ export interface CardPayload {
   external_ids: Record<string, string>;
   effect_text?: string | null;
   card_type?: string | null;
+  card_kind?: CanonicalCardKind | null;
   subtype?: string | null;
   attribute?: string | null;
   monster_type?: string | null;

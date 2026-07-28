@@ -544,7 +544,7 @@ export default function SetImportPage() {
         <Box>
           <Typography variant="h4">Set-Erfassung</Typography>
           <Typography color="text.secondary" sx={{ mt: 0.75, maxWidth: 900 }}>
-            Die Setliste laedt komplette Sets ueber den kanonischen Provider-Import und verteilt den Display-Gesamtpreis automatisch auf alle
+            Die Setliste lädt komplette Sets über den kanonischen Provider-Import und verteilt den Display-Gesamtpreis automatisch auf alle
             aktuell eingetragenen Karten.
           </Typography>
         </Box>
@@ -567,7 +567,7 @@ export default function SetImportPage() {
             ? `Preisupdate abgeschlossen. Letztes Preisupdate: ${formatDate(priceSyncJob.completed_at || priceSyncJob.created_at)}.`
             : priceSyncJob.status === 'failed'
               ? `Preisupdate fehlgeschlagen: ${priceSyncJob.error_message || 'Unbekannter Fehler'}.`
-              : `Preisupdate laeuft fuer die importierten Karten. Job #${priceSyncJob.id} wurde am ${formatDate(
+              : `Preisupdate läuft für die importierten Karten. Job #${priceSyncJob.id} wurde am ${formatDate(
                   priceSyncJob.created_at,
                 )} gestartet.`}
         </Alert>
@@ -577,7 +577,7 @@ export default function SetImportPage() {
       <Paper sx={{ p: 3 }}>
         <Stack spacing={2.5}>
           <Box>
-            <Typography variant="h6">1. Set auswaehlen</Typography>
+            <Typography variant="h6">1. Set auswählen</Typography>
             <Typography color="text.secondary" sx={{ mt: 0.5 }}>
               Suche nach Setname oder Setcode. Die Treffer zeigen direkt, wie viele Karten laut Katalog erwartet und aktuell lokal geladen sind.
             </Typography>
@@ -724,7 +724,7 @@ export default function SetImportPage() {
           </Box>
 
           <TextField
-            label="Notiz fuer den Einkaufsvorgang"
+            label="Notiz für den Einkaufsvorgang"
             value={notes}
             onChange={(event) => {
               setSuccess(null);
@@ -744,7 +744,7 @@ export default function SetImportPage() {
       ) : null}
       {isImportBlocked ? (
         <Alert severity="error" icon={<WarningAmberRoundedIcon />}>
-          Der Import ist gesperrt, bis das Set vollstaendig validiert wurde. Bitte zuerst die Set-Zuordnung bzw. den Sync korrigieren.
+          Der Import ist gesperrt, bis das Set vollständig validiert wurde. Bitte zuerst die Set-Zuordnung bzw. den Sync korrigieren.
         </Alert>
       ) : null}
 
@@ -753,16 +753,16 @@ export default function SetImportPage() {
           <Box sx={{ p: 3, pb: 2 }}>
             <Typography variant="h6">3. Kartenliste des Sets</Typography>
             <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              Die Tabelle ist pro Spalte sortierbar. Pro Zeile siehst du live die verteilte Kostenbasis fuer genau diese Kartenmenge.
+              Die Tabelle ist pro Spalte sortierbar. Pro Zeile siehst du live die verteilte Kostenbasis für genau diese Kartenmenge.
             </Typography>
           </Box>
           <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
 
           {!selectedSet ? (
             <Box sx={{ p: 4.5, textAlign: 'center' }}>
-              <Typography variant="h6">Noch kein Set ausgewaehlt</Typography>
+              <Typography variant="h6">Noch kein Set ausgewählt</Typography>
               <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-                Waehle oben ein Set aus, dann werden alle zugehoerigen Karten geladen.
+                Wähle oben ein Set aus, dann werden alle zugehörigen Karten geladen.
               </Typography>
             </Box>
           ) : loadingCards ? (
@@ -781,20 +781,20 @@ export default function SetImportPage() {
                 <Typography color="text.secondary">
                   {selectedCardCount > 0
                     ? `${selectedCardCount} Karten markiert. Mengen lassen sich gesammelt anpassen.`
-                    : 'Mehrfachauswahl aktiv: markiere Karten, um ihre Mengen gesammelt zu erhoehen.'}
+                    : 'Mehrfachauswahl aktiv: markiere Karten, um ihre Mengen gesammelt zu erhöhen.'}
                 </Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   <Button size="small" variant="outlined" onClick={() => applyBulkQuantityDelta(1)} disabled={!selectedCardCount}>
-                    +1 fuer Auswahl
+                    +1 für Auswahl
                   </Button>
                   <Button size="small" variant="outlined" onClick={() => applyBulkQuantityDelta(5)} disabled={!selectedCardCount}>
-                    +5 fuer Auswahl
+                    +5 für Auswahl
                   </Button>
                   <Button size="small" color="inherit" onClick={clearSelectedCardQuantities} disabled={!selectedCardCount}>
                     Mengen leeren
                   </Button>
                   <Button size="small" color="inherit" onClick={clearCardSelection} disabled={!selectedCardCount}>
-                    Auswahl loesen
+                    Auswahl lösen
                   </Button>
                 </Stack>
               </Stack>
@@ -808,7 +808,7 @@ export default function SetImportPage() {
                           checked={allVisibleSelected}
                           indeterminate={partiallyVisibleSelected}
                           onChange={(event) => handleSelectAllVisible(event.target.checked)}
-                          inputProps={{ 'aria-label': 'Alle sichtbaren Karten auswaehlen' }}
+                          inputProps={{ 'aria-label': 'Alle sichtbaren Karten auswählen' }}
                         />
                       </TableCell>
                       <TableCell sortDirection={sortField === 'name' ? sortDirection : false}>
@@ -906,7 +906,7 @@ export default function SetImportPage() {
                             <Checkbox
                               checked={isSelected}
                               onChange={() => toggleCardSelection(card.card_print_id)}
-                              inputProps={{ 'aria-label': `${card.name} auswaehlen` }}
+                              inputProps={{ 'aria-label': `${card.name} auswählen` }}
                             />
                           </TableCell>
                           <TableCell>
@@ -969,7 +969,7 @@ export default function SetImportPage() {
           <Paper sx={{ p: 3 }}>
             <Typography variant="h6">4. Live-Zusammenfassung</Typography>
             <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              Die Verteilung aktualisiert sich bei jeder Mengen- oder Preis-Aenderung.
+              Die Verteilung aktualisiert sich bei jeder Mengen- oder Preis-Änderung.
             </Typography>
             <Box sx={{ display: 'grid', gap: 1.25, mt: 2.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
@@ -979,7 +979,7 @@ export default function SetImportPage() {
                 </Typography>
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Ausgewaehlte Kartenzeilen</Typography>
+                <Typography color="text.secondary">Ausgewählte Kartenzeilen</Typography>
                 <Typography fontWeight={700}>{selectedLineCount}</Typography>
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
@@ -1009,19 +1009,19 @@ export default function SetImportPage() {
                 <Typography fontWeight={700}>
                   {marketCurrencies.length <= 1
                     ? formatCurrency(estimatedMarketTotal, marketCurrencies[0] || displayCurrency)
-                    : 'gemischte Waehrungen'}
+                    : 'gemischte Währungen'}
                 </Typography>
               </Box>
             </Box>
 
             {allocationPreview.remainderCents > 0 ? (
               <Alert severity="info" sx={{ mt: 2.25 }}>
-                {allocationPreview.remainderCents} Cent Rundungsrest werden deterministisch auf die letzten ausgewaehlten Zeilen verteilt.
+                {allocationPreview.remainderCents} Cent Rundungsrest werden deterministisch auf die letzten ausgewählten Zeilen verteilt.
               </Alert>
             ) : null}
 
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2.5 }}>
-              <Chip label={`Waehrung: ${displayCurrency}`} variant="outlined" />
+              <Chip label={`Währung: ${displayCurrency}`} variant="outlined" />
               <Chip label={`Sprache: ${language.toUpperCase()}`} variant="outlined" />
               <Chip label={`Zustand: ${condition}`} variant="outlined" />
               {storageLocationId ? (
@@ -1042,7 +1042,7 @@ export default function SetImportPage() {
           >
             <Typography variant="h6">5. Speichern</Typography>
             <Typography color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>
-              Beim Speichern wird ein eigener Einkaufsvorgang erzeugt. Jede Zeile behaelt ihre exakt verteilte Kostenbasis und referenziert
+              Beim Speichern wird ein eigener Einkaufsvorgang erzeugt. Jede Zeile behält ihre exakt verteilte Kostenbasis und referenziert
               denselben Batch.
             </Typography>
             <Button

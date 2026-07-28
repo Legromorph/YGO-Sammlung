@@ -12,8 +12,17 @@ CARDMARKET_BASE_URL = "https://www.cardmarket.com"
 CARDMARKET_MATCH_EXACT = "exact_verified"
 CARDMARKET_MATCH_EXACT_VARIANT = "exact_verified_variant"
 CARDMARKET_MATCH_SET_NAME = "set_name_verified_name_only"
+CARDMARKET_MATCH_MANUAL = "manual_verified"
 CARDMARKET_MATCH_AMBIGUOUS = "ambiguous"
 CARDMARKET_MATCH_FAILED = "failed"
+CARDMARKET_SAFE_MATCH_QUALITIES = frozenset(
+    {
+        CARDMARKET_MATCH_EXACT,
+        CARDMARKET_MATCH_EXACT_VARIANT,
+        CARDMARKET_MATCH_MANUAL,
+        CARDMARKET_MATCH_SET_NAME,
+    }
+)
 
 _STOPWORDS = {"of", "the", "and", "for", "de", "la", "le", "el", "in", "on", "to", "a", "an"}
 _ROMAN_NUMERALS = {"i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"}
@@ -58,13 +67,15 @@ class CardmarketUrlCandidate:
 
 
 class CardmarketProductUrlBuilder:
-    def __init__(self) -> None:
+    def __init__(self, *, variant_probe_limit: int = 12) -> None:
         self.set_slug_resolver = get_cardmarket_set_slug_resolver()
+        self.variant_probe_limit = max(1, min(int(variant_probe_limit), 32))
 
     def slugify_segment(self, value: str | None) -> str | None:
         text = _ascii_text(value).strip()
         if not text:
             return None
+        text = re.sub(r"(?<=\w)'(?=\w)", "", text)
 
         tokens = [token for token in re.split(r"[^A-Za-z0-9]+", text) if token]
         if not tokens:
@@ -161,40 +172,66 @@ class CardmarketProductUrlBuilder:
         if explicit_number:
             variant_numbers.append(explicit_number)
         if variant_count > 1:
-            variant_numbers.extend(range(1, min(max(variant_count, 1), 8) + 1))
+            probe_count = min(max(variant_count, self.variant_probe_limit), 32)
+            variant_numbers.extend(range(1, probe_count + 1))
         variant_numbers = [int(number) for number in _dedupe_preserve_order([str(number) for number in variant_numbers])]
 
         for set_candidate in resolved_set_slug_candidates:
-            add(set_candidate.slug, set_candidate.source, base_product_slug, reason="base_product_slug")
-            if rarity_slug:
-                add(set_candidate.slug, set_candidate.source, f"{base_product_slug}-{rarity_slug}", reason="base_product_slug_with_rarity")
+            if variant_numbers:
+                if rarity_slug:
+                    for variant_number in variant_numbers:
+                        compact_variant = f"V{variant_number}"
+                        add(
+                            set_candidate.slug,
+                            set_candidate.source,
+                            f"{base_product_slug}-{compact_variant}-{rarity_slug}",
+                            variant_name=compact_variant,
+                            reason="canonical_variant_with_rarity",
+                        )
 
-            for variant_number in variant_numbers:
-                compact_variant = f"V{variant_number}"
-                hyphen_variant = f"V-{variant_number}"
-                for variant_label, variant_reason in [(compact_variant, "compact_variant"), (hyphen_variant, "hyphen_variant")]:
+                for variant_number in variant_numbers:
+                    compact_variant = f"V{variant_number}"
                     add(
                         set_candidate.slug,
                         set_candidate.source,
-                        f"{base_product_slug}-{variant_label}",
+                        f"{base_product_slug}-{compact_variant}",
                         variant_name=compact_variant,
-                        reason=f"{variant_reason}_suffix",
+                        reason="compact_variant_suffix",
                     )
+
+                for variant_number in variant_numbers:
+                    compact_variant = f"V{variant_number}"
+                    hyphen_variant = f"V-{variant_number}"
                     if rarity_slug:
                         add(
                             set_candidate.slug,
                             set_candidate.source,
-                            f"{base_product_slug}-{variant_label}-{rarity_slug}",
+                            f"{base_product_slug}-{hyphen_variant}-{rarity_slug}",
                             variant_name=compact_variant,
-                            reason=f"{variant_reason}_suffix_with_rarity",
+                            reason="hyphen_variant_suffix_with_rarity",
                         )
                         add(
                             set_candidate.slug,
                             set_candidate.source,
-                            f"{base_product_slug}-{rarity_slug}-{variant_label}",
+                            f"{base_product_slug}-{rarity_slug}-{compact_variant}",
                             variant_name=compact_variant,
-                            reason=f"{variant_reason}_rarity_before_variant",
+                            reason="compact_variant_rarity_before_variant",
                         )
+                    add(
+                        set_candidate.slug,
+                        set_candidate.source,
+                        f"{base_product_slug}-{hyphen_variant}",
+                        variant_name=compact_variant,
+                        reason="hyphen_variant_suffix",
+                    )
+
+                if rarity_slug:
+                    add(set_candidate.slug, set_candidate.source, f"{base_product_slug}-{rarity_slug}", reason="base_product_slug_with_rarity")
+                add(set_candidate.slug, set_candidate.source, base_product_slug, reason="base_product_slug")
+            else:
+                add(set_candidate.slug, set_candidate.source, base_product_slug, reason="base_product_slug")
+                if rarity_slug:
+                    add(set_candidate.slug, set_candidate.source, f"{base_product_slug}-{rarity_slug}", reason="base_product_slug_with_rarity")
 
         deduped: list[CardmarketUrlCandidate] = []
         seen_urls: set[str] = set()

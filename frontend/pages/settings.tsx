@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import SaveRoundedIcon from '@mui/icons-material/SaveRounded';
 import {
   Alert,
@@ -12,6 +13,7 @@ import {
 } from '@mui/material';
 
 import api, { getApiErrorMessage } from '../lib/api';
+import PageHeader from '../components/page-header';
 import { AppSettings } from '../lib/types';
 import { useAppSettings } from '../components/app-settings-provider';
 
@@ -41,6 +43,7 @@ export default function SettingsPage() {
   const { settings, loading, error, refreshSettings } = useAppSettings();
   const [form, setForm] = useState<AppSettings>(settings);
   const [saving, setSaving] = useState(false);
+  const [downloading, setDownloading] = useState<'csv' | 'json' | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -66,14 +69,34 @@ export default function SettingsPage() {
     }
   };
 
+  const handleDownload = async (format: 'csv' | 'json') => {
+    setDownloading(format);
+    setSaveError(null);
+    try {
+      const endpoint = format === 'csv' ? '/exports/inventory.csv' : '/exports/collection.json';
+      const response = await api.get<Blob>(endpoint, { responseType: 'blob' });
+      const disposition = response.headers['content-disposition'] || '';
+      const filename =
+        disposition.match(/filename="?([^";]+)"?/i)?.[1] ||
+        `ygo-sammlung.${format}`;
+      const objectUrl = URL.createObjectURL(response.data);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (requestError) {
+      setSaveError(getApiErrorMessage(requestError));
+    } finally {
+      setDownloading(null);
+    }
+  };
+
   return (
     <Stack spacing={3}>
-      <Paper sx={{ p: 3 }}>
-        <Typography variant="h4">Einstellungen</Typography>
-        <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-          Globale Defaults fuer Sprache, Suche, Preisabfragen und Waehrungsanzeige.
-        </Typography>
-      </Paper>
+      <PageHeader title="Einstellungen" description="Standards für Sprache, Suche, Preise und Währung." />
 
       {loading ? <Alert severity="info">Einstellungen werden geladen...</Alert> : null}
       {error ? <Alert severity="warning">{error}</Alert> : null}
@@ -83,9 +106,9 @@ export default function SettingsPage() {
       <Paper sx={{ p: 3 }}>
         <Stack spacing={2.5}>
           <Box>
-            <Typography variant="h6">Waehrung & Sprache</Typography>
+            <Typography variant="h6">Währung & Sprache</Typography>
             <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              Diese Werte steuern die Standardanzeige im UI, die Suchdialoge und die Preisaufloesung.
+              Diese Werte steuern die Standardanzeige im UI, die Suchdialoge und die Preisauflösung.
             </Typography>
           </Box>
 
@@ -93,7 +116,7 @@ export default function SettingsPage() {
             <TextField
               select
               fullWidth
-              label="Bevorzugte Waehrung"
+              label="Bevorzugte Währung"
               value={form.preferred_currency}
               onChange={(event) => updateForm({ preferred_currency: event.target.value as AppSettings['preferred_currency'] })}
             >
@@ -133,7 +156,7 @@ export default function SettingsPage() {
                 multiple: true,
                 renderValue: (selected) => (Array.isArray(selected) ? selected.join(', ').toUpperCase() : String(selected)),
               }}
-              helperText="Mehrfachauswahl moeglich. Standard ist DE und EN."
+              helperText="Mehrfachauswahl möglich. Standard ist DE und EN."
             >
               {languageOptions.map((option) => (
                 <MenuItem key={option.value} value={option.value}>
@@ -161,6 +184,30 @@ export default function SettingsPage() {
               {saving ? 'Speichern...' : 'Einstellungen speichern'}
             </Button>
           </Box>
+        </Stack>
+      </Paper>
+
+      <Paper sx={{ p: 3 }}>
+        <Stack spacing={2}>
+          <Typography variant="h6">Sammlung exportieren</Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+            <Button
+              startIcon={<DownloadRoundedIcon />}
+              variant="outlined"
+              disabled={downloading !== null}
+              onClick={() => void handleDownload('csv')}
+            >
+              {downloading === 'csv' ? 'CSV wird erstellt...' : 'Inventar als CSV'}
+            </Button>
+            <Button
+              startIcon={<DownloadRoundedIcon />}
+              variant="outlined"
+              disabled={downloading !== null}
+              onClick={() => void handleDownload('json')}
+            >
+              {downloading === 'json' ? 'JSON wird erstellt...' : 'Sammlung als JSON'}
+            </Button>
+          </Stack>
         </Stack>
       </Paper>
     </Stack>

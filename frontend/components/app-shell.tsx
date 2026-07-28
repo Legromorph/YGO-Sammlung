@@ -14,7 +14,6 @@ import SyncRoundedIcon from '@mui/icons-material/SyncRounded';
 import {
   AppBar,
   Box,
-  Chip,
   Divider,
   Drawer,
   IconButton,
@@ -62,11 +61,9 @@ export default function AppShell({ children }: PropsWithChildren) {
         </Box>
         <Typography variant="h5">YGO Sammlung</Typography>
         <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-          Verwaltung, Preise, Trends und lokale Assets in einem produktionsnahen MVP.
+          Karten, Preise, Decks und Lagerorte.
         </Typography>
       </Box>
-
-      <Chip label="FastAPI + Next.js" color="secondary" variant="outlined" sx={{ alignSelf: 'flex-start', mb: 2.5 }} />
 
       <List sx={{ p: 0 }}>
         {navigation.map((item) => {
@@ -96,7 +93,7 @@ export default function AppShell({ children }: PropsWithChildren) {
       <Box sx={{ mt: 'auto', pt: 2.5 }}>
         <Divider sx={{ borderColor: 'rgba(255,255,255,0.08)', mb: 2 }} />
         <Typography variant="body2" color="text.secondary">
-          Preis-Provider und Bildquellen bleiben austauschbar. Cardmarket und Omega sind sauber gekapselt.
+          Daten lokal verwalten, Preise gezielt prüfen.
         </Typography>
       </Box>
     </Box>
@@ -157,6 +154,8 @@ export default function AppShell({ children }: PropsWithChildren) {
         component="main"
         sx={{
           flexGrow: 1,
+          minWidth: 0,
+          overflowX: 'hidden',
           px: { xs: 2, sm: 3, md: 4 },
           py: { xs: 10, md: 4 },
         }}

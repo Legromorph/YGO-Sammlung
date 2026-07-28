@@ -1,10 +1,10 @@
 # YGO Sammlung
 
-Docker-basierte Webanwendung zur Verwaltung einer Yu-Gi-Oh!-Kartensammlung mit FastAPI, Next.js, PostgreSQL, lokaler Bildspeicherung und modularen Provider-Schnittstellen fuer Preise, Kartendaten und spaetere YGO-Omega-Anbindung.
+Docker-basierte Webanwendung zur Verwaltung einer Yu-Gi-Oh!-Kartensammlung mit FastAPI, Next.js, PostgreSQL, lokaler Bildspeicherung und modularen Provider-Schnittstellen für Preise, Kartendaten und eine spätere YGO-Omega-Anbindung.
 
 ## Architekturuebersicht
 
-- Frontend: Next.js 14 mit React, Material UI, Recharts und einer responsiven Admin-Shell
+- Frontend: Next.js 15 mit React, Material UI, Recharts und einer responsiven Admin-Shell
 - Backend: FastAPI mit SQLAlchemy 2, Pydantic 2, sauberer Service- und Provider-Trennung
 - Datenbank: PostgreSQL fuer Inventar, Preisverlauf, Decks, Sammlungen, Jobs und Source-Mappings
 - Worker/Scheduler: dedizierter DB-Polling-Worker plus Scheduler-Service fuer Preisupdates, Bilddownloads, Trend-Rebuilds und Kartendaten-Sync
@@ -16,7 +16,7 @@ Docker-basierte Webanwendung zur Verwaltung einer Yu-Gi-Oh!-Kartensammlung mit F
 - Next.js bleibt, weil das vorhandene Frontend bereits React-basiert ist und sich damit eine moderne Desktop-optimierte Oberfläche mit SSR-faehigem Produktionsbuild sauber integrieren laesst.
 - PostgreSQL ist die Standardwahl fuer relationale Bestandsdaten, Preis-Historien und spaetere Volltext-/Reporting-Erweiterungen.
 - Ein DB-basierter Worker mit atomischem Claiming ueber PostgreSQL bleibt fuer dieses MVP robuster als ein separater Broker-Only-Flow, weil `sync_jobs` damit direkt die Source of Truth fuer Queue, Status und Recovery sind.
-- YGOPRODeck ist der Default fuer Kartendaten und Bilder, weil dort Metadaten und Bild-URLs offen dokumentiert sind. Die Preis-Schicht ist trotzdem modular, damit spaeter eine andere Quelle oder eine offizielle Cardmarket-Anbindung ergänzt werden kann.
+- YGOPRODeck ist der Standard für Kartendaten und Bilder. Die Preisschicht bleibt modular, damit später eine andere Quelle oder eine autorisierte Cardmarket-Anbindung ergänzt werden kann.
 
 ## Projektstruktur
 
@@ -79,7 +79,7 @@ Details und ERD-Beschreibung: [docs/erd.md](docs/erd.md)
 3. Anwendung bauen und starten:
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
 4. Frontend: `http://localhost:3000`
@@ -87,6 +87,34 @@ docker compose up --build
 6. OpenAPI: `http://localhost:8000/docs`
 
 Beim ersten Start fuehrt das Backend automatisch `alembic upgrade head` und das Seed-Skript aus.
+
+## GHCR und Dockhand
+
+Bei jedem Push auf `main` veröffentlicht GitHub Actions zwei Multi-Arch-Images für
+`linux/amd64` und `linux/arm64`:
+
+- `ghcr.io/legromorph/ygo-sammlung-backend:latest`
+- `ghcr.io/legromorph/ygo-sammlung-frontend:latest`
+
+Backend, Worker und Scheduler verwenden dasselbe Backend-Image. PostgreSQL, Redis,
+Backups und lokale Daten werden nicht in GHCR veröffentlicht.
+
+Für Dockhand steht [docker-compose.ghcr.yml](docker-compose.ghcr.yml) bereit. Diese
+Datei enthält bewusst keine Datenbank und keinen Redis-Dienst. Beide Dienste müssen
+vom Server erreichbar sein; ihre URLs sowie die öffentliche Frontend-Adresse werden
+in Dockhand als Umgebungsvariablen gesetzt. Die benötigten Namen zeigt
+[.env.dockhand.example](.env.dockhand.example).
+
+Manueller Start mit einer lokalen Umgebungsdatei:
+
+```bash
+docker compose --env-file .env.dockhand -f docker-compose.ghcr.yml pull
+docker compose --env-file .env.dockhand -f docker-compose.ghcr.yml up -d
+```
+
+Das Frontend erwartet die API standardmäßig auf Port `8000` desselben Servernamens.
+Das Backend führt beim Start die Datenbankmigrationen aus, legt aber keine Datenbank
+und keine Datenbankdaten im Image an.
 
 ## Wichtige API-Endpunkte
 
@@ -106,7 +134,37 @@ Beim ersten Start fuehrt das Backend automatisch `alembic upgrade head` und das 
 - `GET /api/sync/jobs/{id}`
 - `POST /api/sync/jobs`
 - `POST /api/sync/jobs/{id}/retry`
+- `GET /api/exports/inventory.csv`
+- `GET /api/exports/collection.json`
 - `GET /media/...` fuer lokal gespeicherte Kartenbilder
+
+## Backup und Export
+
+- Der Compose-Dienst `backup` erstellt beim Start und danach standardmäßig alle 24 Stunden
+  ein PostgreSQL-Dump sowie ein komprimiertes Archiv des Kartenbild-Volumes.
+- Backups liegen standardmäßig unter `./backups/<UTC-Zeitstempel>/`. Mit `BACKUP_PATH`
+  kann stattdessen beispielsweise ein NAS- oder externes Laufwerk verwendet werden.
+- `BACKUP_RETENTION_DAYS` steuert die Aufbewahrung; Standard sind 14 Tage.
+- Ein einzelnes Backup kann mit folgendem Befehl ausgelöst werden:
+
+```bash
+docker compose run --rm backup --once
+```
+
+- Die SHA-256-Prüfsummen stehen neben Dump und Medienarchiv in `SHA256SUMS`.
+- CSV- und JSON-Exporte können unter **Einstellungen** heruntergeladen werden.
+
+Beispiel für die Wiederherstellung eines Datenbank-Dumps:
+
+```bash
+docker compose exec -T db pg_restore --clean --if-exists --no-owner -U ygo_user -d ygo_collection < backups/<ZEITSTEMPEL>/postgres.dump
+```
+
+Beispiel für die Wiederherstellung der Kartenbilder:
+
+```bash
+docker run --rm -v ygo-sammlung_card_media:/media -v "$PWD/backups:/backups:ro" alpine sh -c "rm -rf /media/* && tar -xzf /backups/<ZEITSTEMPEL>/card-media.tar.gz -C /media"
+```
 
 ## Hintergrundjobs
 
@@ -119,6 +177,8 @@ Beim ersten Start fuehrt das Backend automatisch `alembic upgrade head` und das 
 - Der `scheduler`-Container erzeugt die periodischen Jobs direkt in `sync_jobs`.
 - Fehlgeschlagene Jobs koennen ueber die Sync-Seite oder `POST /api/sync/jobs/{id}/retry` erneut gestartet werden.
 - Lange laufende `running`-Jobs werden automatisch als fehlgeschlagen markiert, damit kein Eintrag still haengen bleibt.
+- Faellige YGOPRODeck-Updates werden gebuendelt. Netzaufrufe laufen ausserhalb langer Datenbanktransaktionen; gespeichert wird pro Karte in einer kurzen Transaktion.
+- Nullpreise, negative Werte und nicht-endliche Zahlen gelten als fehlgeschlagene Abfrage und werden weder als aktueller Preis noch im Preisverlauf gespeichert.
 
 ## Frontend-Funktionen
 
@@ -151,9 +211,15 @@ Beim ersten Start fuehrt das Backend automatisch `alembic upgrade head` und das 
 
 - Preis-Matching laeuft auf `card_print`-Ebene statt nur ueber den Kartennamen.
 - Fuer den Match werden mindestens `set_code`, `card_number`, `rarity` und die aus dem Printcode ableitbare Sprache beruecksichtigt.
-- Unsichere Namens-Fallbacks werden nicht mehr stillschweigend als Marktpreis uebernommen. Wenn kein verlasslicher Print-Match existiert, bleibt der Preis leer und wird als Fallback markiert.
+- Der Standardprovider fragt YGOPRODeck mit `tcgplayer_data=yes` ab und speichert den exakten TCGPlayer-Marktpreis des Prints in USD.
+- Fehlt dieser Printpreis, kann `PRICE_ALLOW_CARD_LEVEL_FALLBACK=true` den allgemeinen Cardmarket-Kartenpreis aus YGOPRODeck in EUR verwenden. Dieser Wert gilt fuer die Karte ueber alle Druckversionen und wird deshalb sichtbar als pruefpflichtiger Fallback markiert.
+- Preisverlauf, Volatilitaet und Trends vergleichen nur positive Werte derselben Waehrung. Die API rechnet Ausgabewerte in die bevorzugte Anzeigewaehrung um.
+- Provider-Fehler setzen den Preis-Monitor auf einen gestaffelten Wiederholungsplan, ueberschreiben aber keinen zuvor gueltigen Preis.
 - Die API liefert pro Inventarposition einen Preisstatus mit Match-Qualitaet, Quelle, letztem Update und einem Cardmarket-Link.
-- Wenn eine exakte Cardmarket-Produktreferenz lokal bekannt ist, wird sie auf der Kartenprofilseite direkt verwendet. Andernfalls verlinkt die UI auf die passende Cardmarket-Kartenansicht.
+- Der Cardmarket-Produktlink kann auf der Kartendetailseite manuell gesetzt, geändert, entfernt und bestätigt werden.
+- Automatisch erzeugte Cardmarket-Linkvorschläge bleiben unbestätigt. Es gibt keine
+  Browser-Simulation, HTML-Abfrage oder Preisermittlung über öffentliche Cardmarket-Seiten.
+- Cardmarket-Preise werden manuell gepflegt, bis eine autorisierte API-Anbindung verfügbar ist.
 
 ## Entwicklungsnotizen
 
@@ -168,7 +234,7 @@ Beim ersten Start fuehrt das Backend automatisch `alembic upgrade head` und das 
 
 ## TODOs
 
-- CSV-Import/Export
+- CSV-Import
 - Volltextsuche mit PostgreSQL GIN/TSVector
 - Deck-Exportformate
 - Kartenanlage direkt aus Remote-Suche im UI

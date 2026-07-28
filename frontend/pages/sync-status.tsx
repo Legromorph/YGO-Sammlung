@@ -149,7 +149,7 @@ export default function SyncStatusPage() {
           <Box>
             <Typography variant="h4">Sync-Status & Jobs</Typography>
             <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-              Manuelle Jobstarts, Provider-Status und die aktuelle Worker-Ausfuehrung auf Basis von `sync_jobs`.
+              Manuelle Jobstarts, Provider-Status und die aktuelle Worker-Ausführung auf Basis von `sync_jobs`.
             </Typography>
           </Box>
           <Button
@@ -166,7 +166,7 @@ export default function SyncStatusPage() {
       {error ? <Alert severity="error">{error}</Alert> : null}
       {stuckJobs.length > 0 ? (
         <Alert severity="warning">
-          {stuckJobs.length} Job(s) wirken auffaellig: {stuckJobs.map((job) => `#${job.id} ${job.stuck_reason || job.status}`).join(', ')}
+          {stuckJobs.length} Job(s) wirken auffällig: {stuckJobs.map((job) => `#${job.id} ${job.stuck_reason || job.status}`).join(', ')}
         </Alert>
       ) : null}
 
@@ -180,7 +180,7 @@ export default function SyncStatusPage() {
               <Typography variant="h6">{provider.label}</Typography>
               <Stack direction="row" spacing={1} sx={{ mt: 1.5, flexWrap: 'wrap' }}>
                 <Chip label={provider.active ? 'aktiv' : 'inaktiv'} color={provider.active ? 'success' : 'default'} variant="outlined" />
-                <Chip label={provider.available ? 'verfuegbar' : 'begrenzt'} color={provider.available ? 'secondary' : 'warning'} variant="outlined" />
+                <Chip label={provider.available ? 'verfügbar' : 'begrenzt'} color={provider.available ? 'secondary' : 'warning'} variant="outlined" />
               </Stack>
               <Typography color="text.secondary" sx={{ mt: 1.5 }}>
                 {provider.notes}
@@ -214,7 +214,7 @@ export default function SyncStatusPage() {
           <Box>
             <Typography variant="h6">Jobliste</Typography>
             <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              Sichtbar sind aktuelle Joblaeufe inklusive Retry fuer fehlgeschlagene Preisjobs.
+              Sichtbar sind aktuelle Jobläufe inklusive Retry für fehlgeschlagene Preisjobs.
             </Typography>
           </Box>
           <TextField
@@ -263,7 +263,7 @@ export default function SyncStatusPage() {
                 <TableCell>
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                     <Chip label={job.status} size="small" color={statusColor(job.status)} variant="outlined" />
-                    {job.is_stuck ? <Chip label="auffaellig" size="small" color="warning" variant="outlined" /> : null}
+                    {job.is_stuck ? <Chip label="auffällig" size="small" color="warning" variant="outlined" /> : null}
                   </Stack>
                 </TableCell>
                 <TableCell>{job.provider_key || 'internal'}</TableCell>

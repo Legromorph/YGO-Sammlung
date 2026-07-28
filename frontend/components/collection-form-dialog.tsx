@@ -116,11 +116,7 @@ export default function CollectionFormDialog({
               <Stack spacing={1.5}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
                   <Box>
-                    <Typography variant="h6">Kartenzuordnung</Typography>
-                    <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-                      Suche direkt nach der Kartenposition. Die Trefferliste zeigt Set, Nummer, Raritaet und Sprache, damit du schnell die
-                      passende physische Kopie findest.
-                    </Typography>
+                    <Typography variant="h6">Karten</Typography>
                   </Box>
                   <Typography variant="body2" color="text.secondary">
                     {selectedCardCount} von {cards.length} Zeilen zugeordnet
@@ -189,7 +185,7 @@ export default function CollectionFormDialog({
                   onClick={() => setCards((current) => [...current, { quantity: 1, selectedCard: null }])}
                   sx={{ alignSelf: 'flex-start' }}
                 >
-                  Karte hinzufuegen
+                  Karte hinzufügen
                 </Button>
               </Stack>
             </Paper>

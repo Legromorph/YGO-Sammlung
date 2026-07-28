@@ -18,6 +18,13 @@ def normalize_cardmarket_lookup_key(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", _ascii_text(value).lower())
 
 
+def cardmarket_set_code_family(value: str | None) -> str | None:
+    normalized = (value or "").strip().upper()
+    if not normalized:
+        return None
+    return normalized.split("-", 1)[0] or None
+
+
 def _heuristic_slug(value: str | None) -> str | None:
     text = _ascii_text(value).strip()
     if not text:
@@ -43,6 +50,11 @@ _KNOWN_SET_SLUG_ALIASES: dict[str, str] = {
     normalize_cardmarket_lookup_key("2014 Mega-Tins Mega-Pack"): "2014-MegaTins-MegaPack",
     normalize_cardmarket_lookup_key("2014-MegaTins-MegaPack"): "2014-MegaTins-MegaPack",
     normalize_cardmarket_lookup_key("MP14"): "2014-MegaTins-MegaPack",
+    normalize_cardmarket_lookup_key("2025 Mega-Pack"): "2025-Mega-Pack-Tin",
+    normalize_cardmarket_lookup_key("2025 Mega Pack"): "2025-Mega-Pack-Tin",
+    normalize_cardmarket_lookup_key("2025 Mega-Pack Tin"): "2025-Mega-Pack-Tin",
+    normalize_cardmarket_lookup_key("2025-Mega-Pack-Tin"): "2025-Mega-Pack-Tin",
+    normalize_cardmarket_lookup_key("MP25"): "2025-Mega-Pack-Tin",
 }
 
 
@@ -94,7 +106,7 @@ class CardmarketSetSlugResolver:
                     )
                 )
 
-        alias_inputs = [set_code, set_name, *(alias_names or [])]
+        alias_inputs = [set_code, cardmarket_set_code_family(set_code), set_name, *(alias_names or [])]
         for value in alias_inputs:
             mapped_slug = _KNOWN_SET_SLUG_ALIASES.get(normalize_cardmarket_lookup_key(value))
             if mapped_slug:

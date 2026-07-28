@@ -6,10 +6,7 @@ body,
 
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at 10% 12%, rgba(216, 169, 76, 0.18), transparent 24%),
-    radial-gradient(circle at 88% 18%, rgba(78, 162, 138, 0.16), transparent 20%),
-    linear-gradient(180deg, #0a1111 0%, #091110 38%, #0d1716 100%);
+  background: #0a1111;
 }
 
 body::before {

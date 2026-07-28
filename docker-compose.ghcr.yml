@@ -1,0 +1,73 @@
+name: ygo-sammlung
+
+x-backend-environment: &backend-environment
+  ENVIRONMENT: production
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL muss gesetzt sein}
+  REDIS_URL: ${REDIS_URL:?REDIS_URL muss gesetzt sein}
+  CORS_ORIGINS: ${PUBLIC_FRONTEND_ORIGIN:?PUBLIC_FRONTEND_ORIGIN muss gesetzt sein}
+  FRONTEND_ORIGIN: ${PUBLIC_FRONTEND_ORIGIN:?PUBLIC_FRONTEND_ORIGIN muss gesetzt sein}
+  MEDIA_ROOT: /app/media
+  PRICE_PROVIDER: ygoprodeck
+  CARD_DATA_PROVIDER: ygoprodeck
+  IMAGE_PROVIDER: ygoprodeck
+  CARDMARKET_APP_TOKEN: ${CARDMARKET_APP_TOKEN:-}
+  CARDMARKET_APP_SECRET: ${CARDMARKET_APP_SECRET:-}
+  CARDMARKET_ACCESS_TOKEN: ${CARDMARKET_ACCESS_TOKEN:-}
+  CARDMARKET_ACCESS_SECRET: ${CARDMARKET_ACCESS_SECRET:-}
+
+services:
+  backend:
+    image: ghcr.io/legromorph/ygo-sammlung-backend:${YGO_IMAGE_TAG:-latest}
+    pull_policy: always
+    environment: *backend-environment
+    volumes:
+      - card_media:/app/media
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    command: >
+      sh -c "alembic upgrade head &&
+      python seed.py &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/')\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    image: ghcr.io/legromorph/ygo-sammlung-frontend:${YGO_IMAGE_TAG:-latest}
+    pull_policy: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/legromorph/ygo-sammlung-backend:${YGO_IMAGE_TAG:-latest}
+    pull_policy: always
+    environment: *backend-environment
+    volumes:
+      - card_media:/app/media
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["sh", "-c", "PYTHONPATH=/app python -m app.job_worker"]
+
+  scheduler:
+    image: ghcr.io/legromorph/ygo-sammlung-backend:${YGO_IMAGE_TAG:-latest}
+    pull_policy: always
+    environment: *backend-environment
+    volumes:
+      - card_media:/app/media
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["sh", "-c", "PYTHONPATH=/app python -m app.job_scheduler"]
+
+volumes:
+  card_media:

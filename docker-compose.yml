@@ -33,6 +33,7 @@ services:
     env_file:
       - .env
     environment:
+      ENVIRONMENT: production
       DATABASE_URL: postgresql+asyncpg://ygo_user:ygo_password@db:5432/ygo_collection
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: http://localhost:3000
@@ -72,6 +73,7 @@ services:
     env_file:
       - .env
     environment:
+      ENVIRONMENT: production
       DATABASE_URL: postgresql+asyncpg://ygo_user:ygo_password@db:5432/ygo_collection
       REDIS_URL: redis://redis:6379/0
       MEDIA_ROOT: /app/media
@@ -92,6 +94,7 @@ services:
     env_file:
       - .env
     environment:
+      ENVIRONMENT: production
       DATABASE_URL: postgresql+asyncpg://ygo_user:ygo_password@db:5432/ygo_collection
       REDIS_URL: redis://redis:6379/0
       MEDIA_ROOT: /app/media
@@ -106,6 +109,27 @@ services:
         condition: service_healthy
     restart: unless-stopped
     command: ["sh", "-c", "PYTHONPATH=/app python -m app.job_scheduler"]
+
+  backup:
+    image: postgres:16-alpine
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: ygo_collection
+      PGUSER: ygo_user
+      PGPASSWORD: ygo_password
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      MEDIA_SOURCE: /data/media
+    volumes:
+      - card_media:/data/media:ro
+      - ${BACKUP_PATH:-./backups}:/backups
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh"]
 
 volumes:
   postgres_data:

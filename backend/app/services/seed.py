@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.database import session_scope
 from app.models import Card, CardPrint, Collection, CollectionCard, Deck, DeckCard, InventoryItem, PriceHistory, StorageLocation
 from app.services.storage import rebuild_location_paths
+from app.time_utils import utc_now
 
 
 async def seed_demo_data() -> None:
@@ -17,18 +18,18 @@ async def seed_demo_data() -> None:
 
         binder_red = StorageLocation(name="Binder Rot", location_type="binder", description="High-value staples", path_cache="")
         binder_red_page = StorageLocation(name="Seite 12", location_type="page", parent=binder_red, position_label="Slot 3", path_cache="")
-        binder_green = StorageLocation(name="Binder Gruen", location_type="binder", description="Engine pieces", path_cache="")
+        binder_green = StorageLocation(name="Binder Grün", location_type="binder", description="Engine pieces", path_cache="")
         trade_binder = StorageLocation(name="Trade Binder", location_type="trade_binder", description="Tauschkarten", path_cache="")
         deckbox_black = StorageLocation(name="Deckbox Schwarz", location_type="deckbox", description="Turnierdeck", path_cache="")
         db.add_all([binder_red, binder_red_page, binder_green, trade_binder, deckbox_black])
         await db.flush()
         await rebuild_location_paths(db)
 
-        blue_eyes = Card(name="Blue-Eyes White Dragon", normalized_name="blue-eyes white dragon", card_type="Normal Monster", description="This legendary dragon is a powerful engine of destruction.", attribute="LIGHT", monster_type="Dragon", atk=3000, defense=2500, level=8)
-        ash = Card(name="Ash Blossom & Joyous Spring", normalized_name="ash blossom & joyous spring", card_type="Tuner Monster", description="When a card or effect is activated that includes any of these effects...", attribute="FIRE", monster_type="Zombie", atk=0, defense=1800, level=3)
-        imperm = Card(name="Infinite Impermanence", normalized_name="infinite impermanence", card_type="Trap Card", description="Target 1 face-up monster your opponent controls; negate its effects.", spell_trap_type="Normal")
-        pot = Card(name="Pot of Prosperity", normalized_name="pot of prosperity", card_type="Spell Card", description="Banish 3 or 6 cards from your Extra Deck face-down; excavate cards from the top of your Deck.", spell_trap_type="Normal")
-        nibiru = Card(name="Nibiru, the Primal Being", normalized_name="nibiru, the primal being", card_type="Effect Monster", description="During the Main Phase, if your opponent Normal or Special Summoned 5 or more monsters this turn...", attribute="LIGHT", monster_type="Rock", atk=3000, defense=600, level=11)
+        blue_eyes = Card(name="Blue-Eyes White Dragon", normalized_name="blue-eyes white dragon", card_type="Normal Monster", card_kind="monster", description="This legendary dragon is a powerful engine of destruction.", attribute="LIGHT", monster_type="Dragon", atk=3000, defense=2500, level=8)
+        ash = Card(name="Ash Blossom & Joyous Spring", normalized_name="ash blossom & joyous spring", card_type="Tuner Monster", card_kind="monster", description="When a card or effect is activated that includes any of these effects...", attribute="FIRE", monster_type="Zombie", atk=0, defense=1800, level=3)
+        imperm = Card(name="Infinite Impermanence", normalized_name="infinite impermanence", card_type="Trap Card", card_kind="trap", description="Target 1 face-up monster your opponent controls; negate its effects.", spell_trap_type="normal")
+        pot = Card(name="Pot of Prosperity", normalized_name="pot of prosperity", card_type="Spell Card", card_kind="spell", description="Banish 3 or 6 cards from your Extra Deck face-down; excavate cards from the top of your Deck.", spell_trap_type="normal")
+        nibiru = Card(name="Nibiru, the Primal Being", normalized_name="nibiru, the primal being", card_type="Effect Monster", card_kind="monster", description="During the Main Phase, if your opponent Normal or Special Summoned 5 or more monsters this turn...", attribute="LIGHT", monster_type="Rock", atk=3000, defense=600, level=11)
         db.add_all([blue_eyes, ash, imperm, pot, nibiru])
         await db.flush()
 
@@ -52,7 +53,7 @@ async def seed_demo_data() -> None:
         db.add_all(items)
         await db.flush()
 
-        now = datetime.utcnow()
+        now = utc_now()
         history_points = [
             (items[0], [58.0, 63.0, 70.0, 74.0]),
             (items[1], [8.5, 9.2, 11.8, 12.9]),

@@ -126,7 +126,7 @@ export default function CardSearchPicker({
           <Stack direction="row" spacing={1} alignItems="flex-start">
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Typography variant="caption" color="text.secondary">
-                Aktuell ausgewaehlt
+                Aktuell ausgewählt
               </Typography>
               <CardSearchResultItem card={selectedCard} compact />
             </Box>

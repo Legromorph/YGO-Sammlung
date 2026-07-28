@@ -122,7 +122,7 @@ export default function SyncJobLogDialog({ open, job, onClose }: SyncJobLogDialo
     if (jobDetail?.log_excerpt?.trim()) {
       return jobDetail.log_excerpt;
     }
-    return 'Kein Detail-Log verfuegbar.';
+    return 'Kein Detail-Log verfügbar.';
   }, [jobDetail?.error_message, jobDetail?.log_details, jobDetail?.log_excerpt]);
 
   const handleCopy = async () => {

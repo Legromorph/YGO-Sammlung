@@ -119,11 +119,7 @@ export default function DeckFormDialog({
               <Stack spacing={1.5}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 2, flexWrap: 'wrap' }}>
                   <Box>
-                    <Typography variant="h6">Kartenzuordnung</Typography>
-                    <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-                      Suche Karten direkt per Tippen statt ueber ein statisches Dropdown. Die Vorschlaege laden live und lassen sich auf allen
-                      Bildschirmgroessen gut bedienen.
-                    </Typography>
+                    <Typography variant="h6">Karten</Typography>
                   </Box>
                   <Typography variant="body2" color="text.secondary">
                     {selectedCardCount} von {cards.length} Zeilen zugeordnet
@@ -197,7 +193,7 @@ export default function DeckFormDialog({
                   onClick={() => setCards((current) => [...current, { quantity: 1, section: 'main', is_missing: false, selectedCard: null }])}
                   sx={{ alignSelf: 'flex-start' }}
                 >
-                  Karte hinzufuegen
+                  Karte hinzufügen
                 </Button>
               </Stack>
             </Paper>

@@ -13,8 +13,10 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import session_scope
+from app.integrations.price_values import parse_positive_price
 from app.models import InventoryItem, PriceHistory, PriceMonitorState
 from app.services.currency import convert_amount
+from app.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -67,24 +69,28 @@ def _recent_price_samples(
 ) -> list[tuple[datetime, float, str]]:
     samples: list[tuple[datetime, float, str]] = []
 
-    if current_price is not None:
+    if current_price is not None and current_price > 0:
         samples.append((checked_at, current_price, (current_currency or "EUR").upper()))
 
     skipped_duplicate_current = False
-    for entry in (history or [])[:5]:
+    ordered_history = sorted(history or [], key=lambda entry: entry.captured_at, reverse=True)
+    for entry in ordered_history:
         price = _as_float(entry.price)
-        if price is None:
+        entry_currency = (entry.currency or current_currency or "EUR").upper()
+        if price is None or price <= 0 or entry_currency != (current_currency or "EUR").upper():
             continue
         if (
             current_price is not None
             and not skipped_duplicate_current
             and entry.captured_at >= checked_at - timedelta(seconds=1)
             and abs(price - current_price) < 0.0001
-            and (entry.currency or current_currency or "EUR").upper() == (current_currency or "EUR").upper()
+            and entry_currency == (current_currency or "EUR").upper()
         ):
             skipped_duplicate_current = True
             continue
-        samples.append((entry.captured_at, price, (entry.currency or current_currency or "EUR").upper()))
+        samples.append((entry.captured_at, price, entry_currency))
+        if len(samples) >= 5:
+            break
 
     return samples
 
@@ -97,8 +103,9 @@ async def derive_price_monitor_policy(
     current_currency: str | None = None,
     state: PriceMonitorState | None = None,
     checked_at: datetime | None = None,
+    low_value_threshold: float | None = None,
 ) -> PriceMonitorPolicy:
-    checked_at = checked_at or datetime.utcnow()
+    checked_at = checked_at or utc_now()
     current_price = _as_float(current_price if current_price is not None else item.current_market_price)
     current_currency = (current_currency or item.current_price_currency or "EUR").upper()
     samples = _recent_price_samples(history, current_price=current_price, current_currency=current_currency, checked_at=checked_at)
@@ -128,7 +135,8 @@ async def derive_price_monitor_policy(
     cluster_change = abs(_pct_change(cluster_reference, latest_price) or 0.0)
     volatility_score = round(max([cluster_change, *pair_changes]) if pair_changes else cluster_change, 2)
 
-    low_value_threshold = await _low_value_threshold_for_currency(latest_currency)
+    if low_value_threshold is None:
+        low_value_threshold = await _low_value_threshold_for_currency(latest_currency)
     is_low_value = latest_price <= low_value_threshold
     stable_small_change = (pair_changes[0] if pair_changes else 0.0) <= settings.price_monitor_stable_change_threshold
     strong_changes = sum(1 for change in pair_changes if change >= settings.price_monitor_volatile_change_threshold)
@@ -177,7 +185,7 @@ async def ensure_initial_price_monitor_state(
     *,
     now: datetime | None = None,
 ) -> PriceMonitorState:
-    now = now or datetime.utcnow()
+    now = now or utc_now()
     result = await db.execute(select(PriceMonitorState).where(PriceMonitorState.inventory_item_id == item.id).limit(1))
     state = result.scalar_one_or_none()
     if state:
@@ -210,8 +218,9 @@ async def refresh_price_monitor_state(
     current_price: float | None = None,
     current_currency: str | None = None,
     checked_at: datetime | None = None,
+    low_value_threshold: float | None = None,
 ) -> PriceMonitorState:
-    checked_at = checked_at or datetime.utcnow()
+    checked_at = checked_at or utc_now()
     result = await db.execute(select(PriceMonitorState).where(PriceMonitorState.inventory_item_id == item.id).limit(1))
     state = result.scalar_one_or_none()
     if not state:
@@ -225,6 +234,7 @@ async def refresh_price_monitor_state(
         current_currency=current_currency,
         state=state,
         checked_at=checked_at,
+        low_value_threshold=low_value_threshold,
     )
 
     state.last_price_check_at = checked_at
@@ -254,7 +264,7 @@ async def record_price_monitor_failure(
     error_message: str,
     checked_at: datetime | None = None,
 ) -> PriceMonitorState:
-    checked_at = checked_at or datetime.utcnow()
+    checked_at = checked_at or utc_now()
     result = await db.execute(select(PriceMonitorState).where(PriceMonitorState.inventory_item_id == item.id).limit(1))
     state = result.scalar_one_or_none()
     if not state:
@@ -262,10 +272,9 @@ async def record_price_monitor_failure(
         db.add(state)
 
     failure_count = (state.failure_count or 0) + 1
-    base_interval = state.price_check_interval_hours or settings.price_monitor_default_interval_hours
     backoff_hours = min(
         settings.price_monitor_max_interval_hours,
-        max(settings.price_monitor_min_interval_hours, base_interval * (2 ** min(failure_count - 1, 3))),
+        settings.price_monitor_min_interval_hours * (2 ** min(failure_count - 1, 4)),
     )
 
     state.last_price_check_at = checked_at
@@ -294,7 +303,8 @@ def build_price_monitor_status(
     active_job: Any | None = None,
 ) -> dict[str, Any]:
     state = item.price_monitor_state
-    latest_history = max(item.price_history, key=lambda entry: entry.captured_at) if item.price_history else None
+    valid_history = [entry for entry in item.price_history if parse_positive_price(entry.price) is not None]
+    latest_history = max(valid_history, key=lambda entry: entry.captured_at) if valid_history else None
 
     last_price_check_at = None
     next_price_check_at = None
@@ -330,8 +340,8 @@ def build_price_monitor_status(
         "pending_job_id": active_job.id if active_job else None,
         "match_quality": item.last_price_match_quality,
         "source": item.last_price_source,
-        "note": item.last_price_note or last_error_message,
-        "last_updated_at": last_price_check_at or item.last_priced_at or (latest_history.captured_at if latest_history else None),
+        "note": last_error_message or item.last_price_note,
+        "last_updated_at": item.last_priced_at or (latest_history.captured_at if latest_history else None),
         "cardmarket_url": item.cardmarket_reference,
         "cardmarket_link_mode": None,
         "last_price_check_at": last_price_check_at,
@@ -357,7 +367,7 @@ async def bootstrap_missing_price_monitor_states() -> int:
             .order_by(InventoryItem.id.asc())
         )
         items = result.scalars().unique().all()
-        now = datetime.utcnow()
+        now = utc_now()
         for item in items:
             await refresh_price_monitor_state(db, item, history=item.price_history, checked_at=now)
             created += 1

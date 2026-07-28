@@ -9,9 +9,15 @@ function normalizedMonitorState(pricing: PricingStatus): string {
 }
 
 export function pricingLabel(pricing: PricingStatus): string {
-  switch (normalizedMatchQuality(pricing)) {
+  return priceMatchLabel(normalizedMatchQuality(pricing));
+}
+
+export function priceMatchLabel(matchQuality?: string | null): string {
+  switch (matchQuality) {
     case 'manual':
       return 'Manuell';
+    case 'manual_verified':
+      return 'Manuell bestätigter Print';
     case 'exact_verified':
     case 'exact_verified_variant':
     case 'exact':
@@ -35,9 +41,9 @@ export function pricingLabel(pricing: PricingStatus): string {
     case 'volatile':
       return 'Volatil';
     case 'high_volatility':
-      return 'Hohe Volatilitaet';
+      return 'Hohe Volatilität';
     case 'retry':
-      return 'Retry';
+      return 'Wiederholung geplant';
     case 'updating':
       return 'Preis wird aktualisiert';
     default:
@@ -49,6 +55,8 @@ export function pricingColor(pricing: PricingStatus): 'default' | 'success' | 'w
   switch (normalizedMatchQuality(pricing)) {
     case 'manual':
       return 'info';
+    case 'manual_verified':
+      return 'success';
     case 'exact_verified':
     case 'exact_verified_variant':
     case 'exact':
@@ -91,9 +99,9 @@ export function monitorStateLabel(pricing: PricingStatus): string {
     case 'volatile':
       return 'Volatil';
     case 'high_volatility':
-      return 'Hohe Volatilitaet';
+      return 'Hohe Volatilität';
     case 'retry':
-      return 'Retry';
+      return 'Wiederholung geplant';
     case 'updating':
       return 'Preis wird aktualisiert';
     default:
@@ -121,7 +129,12 @@ export function monitorStateColor(pricing: PricingStatus): 'default' | 'success'
 }
 
 export function cardmarketLinkLabel(quality?: string | null): string {
+  if (!quality) {
+    return 'Kein Link';
+  }
   switch (quality) {
+    case 'manual_verified':
+      return 'Manuell bestätigt';
     case 'exact_verified':
       return 'Link verifiziert';
     case 'exact_verified_variant':
@@ -129,7 +142,7 @@ export function cardmarketLinkLabel(quality?: string | null): string {
     case 'set_name_verified_name_only':
       return 'Name-only-Link';
     case 'ambiguous':
-      return 'Link unsicher';
+      return 'Automatisch erstellt, nicht verifiziert';
     case 'failed':
       return 'Link fehlgeschlagen';
     default:
@@ -139,6 +152,7 @@ export function cardmarketLinkLabel(quality?: string | null): string {
 
 export function cardmarketLinkColor(quality?: string | null): 'default' | 'success' | 'warning' | 'info' {
   switch (quality) {
+    case 'manual_verified':
     case 'exact_verified':
     case 'exact_verified_variant':
       return 'success';
@@ -157,4 +171,29 @@ export function pricingUpdateLabel(pricing: PricingStatus): string | null {
     return null;
   }
   return 'Preis wird aktualisiert';
+}
+
+export function priceSourceLabel(source?: string | null): string {
+  switch (source) {
+    case 'ygoprodeck':
+      return 'YGOPRODeck';
+    case 'ygoprodeck:tcgplayer_set_price':
+      return 'TCGPlayer-Printpreis via YGOPRODeck';
+    case 'ygoprodeck:cardmarket_card_price':
+      return 'Cardmarket-Kartenpreis via YGOPRODeck';
+    case 'ygoprodeck:cardmarket':
+      return 'Cardmarket-Kartenpreis via YGOPRODeck';
+    case 'ygoprodeck:tcgplayer':
+      return 'TCGPlayer-Kartenpreis via YGOPRODeck';
+    case 'ygoprodeck:set_price':
+      return 'YGOPRODeck-Printpreis';
+    case 'cardmarket:median_top5':
+      return 'Cardmarket Median Top 5';
+    case 'cardmarket':
+      return 'Cardmarket';
+    case 'manual':
+      return 'Manuell';
+    default:
+      return source || 'n/a';
+  }
 }

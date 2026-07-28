@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
 
+from app.time_utils import utc_now
+
 from .product_url_builder import (
     CARDMARKET_BASE_URL,
     CARDMARKET_CATEGORY,
@@ -11,6 +13,8 @@ from .product_url_builder import (
     CARDMARKET_MATCH_EXACT,
     CARDMARKET_MATCH_EXACT_VARIANT,
     CARDMARKET_MATCH_FAILED,
+    CARDMARKET_MATCH_MANUAL,
+    CARDMARKET_SAFE_MATCH_QUALITIES,
     CARDMARKET_MATCH_SET_NAME,
     CardmarketProductUrlBuilder,
     CardmarketUrlBuilder,
@@ -31,6 +35,7 @@ class CardmarketLinkResolution:
     mode: str
     category: str = CARDMARKET_CATEGORY
     set_slug: str | None = None
+    set_name: str | None = None
     product_slug: str | None = None
     product_name: str | None = None
     variant_name: str | None = None
@@ -47,7 +52,8 @@ def normalize_cardmarket_product_url(url: str | None) -> str | None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         return None
-    if "cardmarket.com" not in parsed.netloc.lower():
+    hostname = (parsed.hostname or "").lower()
+    if hostname != "cardmarket.com" and not hostname.endswith(".cardmarket.com"):
         return None
 
     path_segments = [segment for segment in parsed.path.split("/") if segment]
@@ -60,7 +66,11 @@ def normalize_cardmarket_product_url(url: str | None) -> str | None:
 
 def split_cardmarket_product_url(url: str | None) -> tuple[str | None, str | None, str | None]:
     parsed = urlparse(url or "")
-    if parsed.scheme not in {"http", "https"} or "cardmarket.com" not in parsed.netloc.lower():
+    hostname = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme not in {"http", "https"}
+        or (hostname != "cardmarket.com" and not hostname.endswith(".cardmarket.com"))
+    ):
         return None, None, None
 
     path_segments = [segment for segment in parsed.path.split("/") if segment]
@@ -78,6 +88,7 @@ def resolve_cardmarket_product_url(
     cardmarket_set_name: str | None = None,
     cardmarket_product_name: str | None = None,
     cardmarket_variant_name: str | None = None,
+    cardmarket_rarity: str | None = None,
     card_name: str | None = None,
     has_multiple_variants: bool = False,
     allow_fallback: bool = True,
@@ -87,30 +98,46 @@ def resolve_cardmarket_product_url(
     exact_url = normalize_cardmarket_product_url(cardmarket_product_url)
     if exact_url:
         _, set_slug, product_slug = split_cardmarket_product_url(exact_url)
-        mode = CARDMARKET_MATCH_EXACT_VARIANT if _slug_has_variant_marker(product_slug) or cardmarket_variant_name else CARDMARKET_MATCH_EXACT
+        has_variant_marker = _slug_has_variant_marker(product_slug) or bool(cardmarket_variant_name)
+        mode = (
+            CARDMARKET_MATCH_AMBIGUOUS
+            if has_multiple_variants and not has_variant_marker
+            else CARDMARKET_MATCH_EXACT_VARIANT
+            if has_variant_marker
+            else CARDMARKET_MATCH_EXACT
+        )
         return CardmarketLinkResolution(
             url=exact_url,
             mode=mode,
             set_slug=set_slug,
+            set_name=cardmarket_set_name,
             product_slug=product_slug,
             product_name=cardmarket_product_name or card_name,
             variant_name=cardmarket_variant_name,
-            verified_at=datetime.utcnow(),
-            reason="stored_exact_url",
+            verified_at=utc_now() if mode != CARDMARKET_MATCH_AMBIGUOUS else None,
+            reason="stored_exact_url" if mode != CARDMARKET_MATCH_AMBIGUOUS else "stored_url_missing_variant_marker",
         )
 
     derived_set_slug = cardmarket_set_slug or build_cardmarket_set_slug(cardmarket_set_name)
     if cardmarket_product_slug and derived_set_slug:
-        mode = CARDMARKET_MATCH_EXACT_VARIANT if _slug_has_variant_marker(cardmarket_product_slug) or cardmarket_variant_name else CARDMARKET_MATCH_EXACT
+        has_variant_marker = _slug_has_variant_marker(cardmarket_product_slug) or bool(cardmarket_variant_name)
+        mode = (
+            CARDMARKET_MATCH_AMBIGUOUS
+            if has_multiple_variants and not has_variant_marker
+            else CARDMARKET_MATCH_EXACT_VARIANT
+            if has_variant_marker
+            else CARDMARKET_MATCH_EXACT
+        )
         return CardmarketLinkResolution(
             url=_DEFAULT_BUILDER.build_product_url(derived_set_slug, cardmarket_product_slug),
             mode=mode,
             set_slug=derived_set_slug,
+            set_name=cardmarket_set_name,
             product_slug=cardmarket_product_slug,
             product_name=cardmarket_product_name or card_name,
             variant_name=cardmarket_variant_name,
-            verified_at=datetime.utcnow(),
-            reason="stored_exact_slug",
+            verified_at=utc_now() if mode != CARDMARKET_MATCH_AMBIGUOUS else None,
+            reason="stored_exact_slug" if mode != CARDMARKET_MATCH_AMBIGUOUS else "stored_slug_missing_variant_marker",
         )
 
     explicit_set_candidates = (
@@ -122,7 +149,7 @@ def resolve_cardmarket_product_url(
         set_name=cardmarket_set_name,
         set_slug_candidates=explicit_set_candidates,
         product_name=cardmarket_product_name or card_name,
-        rarity=None,
+        rarity=cardmarket_rarity,
         variant_count=2 if has_multiple_variants else 1,
         explicit_variant_name=cardmarket_variant_name,
     )
@@ -130,12 +157,13 @@ def resolve_cardmarket_product_url(
         first_candidate = candidates[0]
         return CardmarketLinkResolution(
             url=first_candidate.url,
-            mode=CARDMARKET_MATCH_EXACT_VARIANT if _slug_has_variant_marker(first_candidate.product_slug) else CARDMARKET_MATCH_SET_NAME,
+            mode=CARDMARKET_MATCH_AMBIGUOUS,
             set_slug=first_candidate.set_slug,
+            set_name=cardmarket_set_name,
             product_slug=first_candidate.product_slug,
             product_name=cardmarket_product_name or card_name,
-            variant_name=first_candidate.variant_name,
-            reason=first_candidate.reason,
+            variant_name=None,
+            reason=f"unverified_{first_candidate.reason}",
         )
 
     fallback_url = _DEFAULT_BUILDER.build_fallback_url(card_name or cardmarket_product_name) if allow_fallback else None
@@ -143,6 +171,7 @@ def resolve_cardmarket_product_url(
         url=fallback_url,
         mode=CARDMARKET_MATCH_AMBIGUOUS if fallback_url else CARDMARKET_MATCH_FAILED,
         set_slug=derived_set_slug,
+        set_name=cardmarket_set_name,
         product_slug=cardmarket_product_slug,
         product_name=cardmarket_product_name or card_name,
         variant_name=cardmarket_variant_name,

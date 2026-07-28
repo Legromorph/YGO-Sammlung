@@ -1,112 +1,88 @@
 from __future__ import annotations
 
-from dataclasses import replace
-import logging
+from app.config import settings
 
 from .product_url_builder import CardmarketProductUrlBuilder
-from .product_verifier import CardmarketProductVerifier
 from .set_slug_resolver import CardmarketSetSlugResolver, get_cardmarket_set_slug_resolver
 from .types import CardmarketPrintContext, CardmarketResolvedProduct
 from .url_builder import (
     CARDMARKET_MATCH_AMBIGUOUS,
-    CARDMARKET_MATCH_EXACT,
-    CARDMARKET_MATCH_EXACT_VARIANT,
     CARDMARKET_MATCH_FAILED,
-    CARDMARKET_MATCH_SET_NAME,
     normalize_cardmarket_product_url,
+    split_cardmarket_product_url,
 )
 
 
-logger = logging.getLogger(__name__)
-
-
-def _build_resolution_context(context: CardmarketPrintContext) -> dict[str, object]:
-    return {
-        "product_name": context.product_name,
-        "set_name": context.set_name,
-        "set_code": context.set_code,
-        "rarity": context.rarity,
-        "card_number": context.card_number,
-        "language": context.language,
-        "variant_count": context.variant_count,
-        "variant_name": context.variant_name,
-        "existing_product_url": context.existing_product_url,
-        "existing_set_slug": context.existing_set_slug,
-        "existing_product_slug": context.existing_product_slug,
-        "set_slug_hints": context.set_slug_hints,
-        "set_aliases": context.set_aliases,
-    }
-
-
-def _attach_resolution_diagnostics(
-    resolved: CardmarketResolvedProduct,
-    *,
-    context: CardmarketPrintContext,
-    trace: list[dict[str, object]],
-) -> CardmarketResolvedProduct:
-    diagnostics = dict(resolved.diagnostics or {})
-    diagnostics["resolution_context"] = _build_resolution_context(context)
-    diagnostics["resolution_trace"] = trace
-    return replace(resolved, diagnostics=diagnostics)
+MANUAL_CONFIRMATION_REASON = "Automatisch erzeugter Vorschlag; manuelle Bestätigung erforderlich."
 
 
 class CardmarketProductResolver:
+    """Builds suggestions without requesting or scraping Cardmarket pages."""
+
     def __init__(self) -> None:
         self.set_slug_resolver: CardmarketSetSlugResolver = get_cardmarket_set_slug_resolver()
-        self.url_builder = CardmarketProductUrlBuilder()
-        self.verifier = CardmarketProductVerifier()
+        self.url_builder = CardmarketProductUrlBuilder(
+            variant_probe_limit=settings.cardmarket_variant_probe_max,
+        )
+
+    def _suggestion(
+        self,
+        context: CardmarketPrintContext,
+        *,
+        url: str,
+        variant_name: str | None,
+        set_slug_source: str | None,
+        diagnostics: dict[str, object],
+    ) -> CardmarketResolvedProduct:
+        _, set_slug, product_slug = split_cardmarket_product_url(url)
+        return CardmarketResolvedProduct(
+            url=url,
+            set_slug=set_slug,
+            product_slug=product_slug,
+            product_name=context.product_name,
+            set_name=context.set_name,
+            rarity=context.rarity,
+            card_number=context.card_number,
+            variant_name=variant_name or context.variant_name,
+            match_quality=CARDMARKET_MATCH_AMBIGUOUS,
+            verified_at=None,
+            reason=MANUAL_CONFIRMATION_REASON,
+            parse_status="manual_confirmation_required",
+            set_slug_source=set_slug_source,
+            diagnostics=diagnostics,
+        )
 
     async def resolve(self, context: CardmarketPrintContext) -> CardmarketResolvedProduct:
-        resolution_trace: list[dict[str, object]] = []
         existing_url = normalize_cardmarket_product_url(context.existing_product_url)
         if existing_url:
-            logger.info("Verifying stored Cardmarket URL: %s", existing_url)
-            resolution_trace.append(
-                {
-                    "stage": "verify_existing_product_url",
+            return self._suggestion(
+                context,
+                url=existing_url,
+                variant_name=context.variant_name,
+                set_slug_source="stored_unverified_url",
+                diagnostics={
+                    "mode": "manual_only",
+                    "source": "stored_unverified_url",
                     "candidate_url": existing_url,
-                }
+                },
             )
-            verified = await self.verifier.verify_url(existing_url, context)
-            resolution_trace.append(
-                {
-                    "stage": "verify_existing_product_url_result",
-                    "candidate_url": existing_url,
-                    "result_url": verified.url,
-                    "match_quality": verified.match_quality,
-                    "reason": verified.reason,
-                    "parse_status": verified.parse_status,
-                    "verification_diagnostics": verified.diagnostics,
-                }
-            )
-            if verified.match_quality in {CARDMARKET_MATCH_EXACT, CARDMARKET_MATCH_EXACT_VARIANT, CARDMARKET_MATCH_SET_NAME}:
-                return _attach_resolution_diagnostics(verified, context=context, trace=resolution_trace)
 
         if context.existing_set_slug and context.existing_product_slug:
-            candidate_url = self.url_builder.build_product_url(context.existing_set_slug, context.existing_product_slug)
-            logger.info("Verifying stored Cardmarket slug URL: %s", candidate_url)
-            resolution_trace.append(
-                {
-                    "stage": "verify_existing_slug_url",
-                    "candidate_url": candidate_url,
-                    "set_slug": context.existing_set_slug,
-                    "product_slug": context.existing_product_slug,
-                }
+            candidate_url = self.url_builder.build_product_url(
+                context.existing_set_slug,
+                context.existing_product_slug,
             )
-            verified = await self.verifier.verify_url(candidate_url, context)
-            resolution_trace.append(
-                {
-                    "stage": "verify_existing_slug_url_result",
+            return self._suggestion(
+                context,
+                url=candidate_url,
+                variant_name=context.variant_name,
+                set_slug_source="stored_product_slug",
+                diagnostics={
+                    "mode": "manual_only",
+                    "source": "stored_product_slug",
                     "candidate_url": candidate_url,
-                    "result_url": verified.url,
-                    "match_quality": verified.match_quality,
-                    "reason": verified.reason,
-                    "parse_status": verified.parse_status,
-                    "verification_diagnostics": verified.diagnostics,
-                }
+                },
             )
-            if verified.match_quality in {CARDMARKET_MATCH_EXACT, CARDMARKET_MATCH_EXACT_VARIANT, CARDMARKET_MATCH_SET_NAME}:
-                return _attach_resolution_diagnostics(verified, context=context, trace=resolution_trace)
 
         set_slug_candidates = self.set_slug_resolver.resolve_candidates(
             set_name=context.set_name,
@@ -114,26 +90,6 @@ class CardmarketProductResolver:
             existing_set_slug=context.existing_set_slug,
             verified_set_slugs=context.set_slug_hints,
             alias_names=context.set_aliases,
-        )
-        if set_slug_candidates:
-            logger.info(
-                "Resolved Cardmarket set slug candidates for set '%s' (%s): %s",
-                context.set_name,
-                context.set_code,
-                ", ".join(f"{candidate.slug} [{candidate.source}]" for candidate in set_slug_candidates),
-            )
-        resolution_trace.append(
-            {
-                "stage": "resolve_set_slug_candidates",
-                "candidates": [
-                    {
-                        "slug": candidate.slug,
-                        "source": candidate.source,
-                        "verified": candidate.verified,
-                    }
-                    for candidate in set_slug_candidates
-                ],
-            }
         )
         candidates = self.url_builder.build_candidate_urls(
             set_name=context.set_name,
@@ -145,70 +101,34 @@ class CardmarketProductResolver:
             variant_count=context.variant_count,
             explicit_variant_name=context.variant_name,
         )
-
-        best_ambiguous: CardmarketResolvedProduct | None = None
-        for candidate in candidates:
-            resolution_trace.append(
-                {
-                    "stage": "try_candidate_url",
+        if candidates:
+            candidate = candidates[0]
+            return self._suggestion(
+                context,
+                url=candidate.url,
+                variant_name=candidate.variant_name,
+                set_slug_source=candidate.set_slug_source,
+                diagnostics={
+                    "mode": "manual_only",
+                    "source": "generated_candidate",
+                    "candidate_count": len(candidates),
                     "candidate_url": candidate.url,
-                    "set_slug": candidate.set_slug,
-                    "product_slug": candidate.product_slug,
-                    "variant_name": candidate.variant_name,
-                    "reason": candidate.reason,
-                    "set_slug_source": candidate.set_slug_source,
-                }
+                    "candidate_reason": candidate.reason,
+                    "set_slug_candidates": [
+                        {
+                            "slug": item.slug,
+                            "source": item.source,
+                            "verified": item.verified,
+                        }
+                        for item in set_slug_candidates
+                    ],
+                },
             )
-            try:
-                logger.info("Trying Cardmarket URL candidate: %s", candidate.url)
-                verified = await self.verifier.verify_url(candidate.url, context)
-            except Exception as exc:
-                logger.warning("Failed to resolve candidate %s: %s", candidate.url, exc)
-                resolution_trace.append(
-                    {
-                        "stage": "candidate_url_error",
-                        "candidate_url": candidate.url,
-                        "error": str(exc),
-                    }
-                )
-                continue
-
-            verified = replace(verified, set_slug_source=candidate.set_slug_source)
-            resolution_trace.append(
-                {
-                    "stage": "candidate_url_result",
-                    "candidate_url": candidate.url,
-                    "result_url": verified.url,
-                    "match_quality": verified.match_quality,
-                    "reason": verified.reason,
-                    "parse_status": verified.parse_status,
-                    "set_slug_source": candidate.set_slug_source,
-                    "verification_diagnostics": verified.diagnostics,
-                }
-            )
-            if verified.match_quality in {CARDMARKET_MATCH_EXACT, CARDMARKET_MATCH_EXACT_VARIANT, CARDMARKET_MATCH_SET_NAME}:
-                logger.info("Resolved exact Cardmarket product for %s: %s", context.product_name, verified.url)
-                return _attach_resolution_diagnostics(verified, context=context, trace=resolution_trace)
-
-            best_ambiguous = verified
-
-        if best_ambiguous:
-            return _attach_resolution_diagnostics(best_ambiguous, context=context, trace=resolution_trace)
 
         fallback_set_slug = set_slug_candidates[0].slug if set_slug_candidates else None
-        fallback_set_source = set_slug_candidates[0].source if set_slug_candidates else None
-        resolution_trace.append(
-            {
-                "stage": "resolution_failed",
-                "fallback_set_slug": fallback_set_slug,
-                "fallback_set_source": fallback_set_source,
-                "candidate_count": len(candidates),
-            }
-        )
-        return _attach_resolution_diagnostics(
-            CardmarketResolvedProduct(
+        return CardmarketResolvedProduct(
             url=None,
-            set_slug=fallback_set_slug or self.url_builder.build_set_slug(context.set_name, set_code=context.set_code, alias_names=context.set_aliases),
+            set_slug=fallback_set_slug,
             product_slug=None,
             product_name=context.product_name,
             set_name=context.set_name,
@@ -217,12 +137,10 @@ class CardmarketProductResolver:
             variant_name=context.variant_name,
             match_quality=CARDMARKET_MATCH_FAILED,
             verified_at=None,
-            reason="no exact product url resolved",
-            parse_status="failed",
-            set_slug_source=fallback_set_source,
-            ),
-            context=context,
-            trace=resolution_trace,
+            reason="Kein Cardmarket-Linkvorschlag konnte erzeugt werden.",
+            parse_status="manual_suggestion_failed",
+            set_slug_source=set_slug_candidates[0].source if set_slug_candidates else None,
+            diagnostics={"mode": "manual_only", "candidate_count": 0},
         )
 
 

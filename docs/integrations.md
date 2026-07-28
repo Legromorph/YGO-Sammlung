@@ -2,57 +2,58 @@
 
 ## Kartendaten und Bilder
 
-### Default: YGOPRODeck
+### YGOPRODeck
 
-- Verwendet fuer:
-  - Kartendaten-Sync
-  - Bild-URLs
-  - Default-Preis-Fallback
-- Grund:
-  - offene, dokumentierte API
-  - Effekttexte, Typen, Attribute, ATK/DEF, Link- und Pendelinfos sind sauber verfuegbar
-  - Bild-URLs sind direkt vorhanden und koennen lokal gespiegelt werden
-- Referenz:
-  - https://ygoprodeck.com/api-guide/
+- Liefert Kartendaten, Bild-URLs und druckspezifische TCGPlayer-Marktdaten.
+- Providerfelder werden unmittelbar in `app/domain/card_metadata.py` normalisiert.
+- `race` wird abhängig von der kanonischen Kartenart entweder als Monster-Typ oder als
+  Zauber-/Fallentyp interpretiert.
+- Kartenbilder werden in das lokale Medien-Volume gespiegelt.
+
+Referenz: <https://api.ygoprodeck.com/api-guide/>
 
 ## Preise
 
-### Aktiver MVP-Provider: `YgoProDeckPriceProvider`
+### YgoProDeckPriceProvider
 
-- Nutzt `card_prices` als legalen Default-Fallback
-- Speichert Preis-Snapshots in `price_history`
-- Trendanalyse wird intern aus historischen Snapshots berechnet
+- Nutzt `tcgplayer_data=yes` für druckspezifische TCGPlayer-Marktpreise in USD.
+- Kann den allgemeinen Cardmarket-Kartenpreis aus dem YGOPRODeck-Datensatz in EUR als
+  sichtbar markierten, nicht druckspezifischen Fallback verwenden.
+- Verwirft Nullpreise, negative Werte und nicht endliche Zahlen.
+- Speichert nur positive Snapshots in `price_history`.
+- Vergleicht im Preisverlauf nur Werte derselben Währung.
 
-### Vorbereiteter Provider: `CardmarketPriceProvider`
+### CardmarketPriceProvider
 
-- Als abstrakte Schnittstelle vorhanden
-- Im MVP bewusst nicht aktiv, solange keine belastbare, sauber freigeschaltete Credentials-Situation vorliegt
-- Cardmarket dokumentiert zwar eine offizielle API, weist aber gleichzeitig darauf hin, dass aktuell keine neuen API-Zugaenge angenommen werden
-- Fuer manuelle Produktlinks gibt es zusaetzlich einen nutzergetriggerten Public-Page-Import:
-  - akzeptiert einzelne oeffentliche Cardmarket-Produktlinks fuer Yu-Gi-Oh!-Einzelkarten
-  - liest Set, Raritaet, Nummer und Preis-Trend aus der sichtbaren Produktseite
-  - reichert Kartentext, Typen und IDs danach weiter ueber YGOPRODeck an
-  - ist bewusst als HTML-Fallback gekennzeichnet und ersetzt keine offizielle OAuth-API
-- Die App kapselt Cardmarket-Referenzen trotzdem bereits in:
-  - `cardmarket_reference`
-  - `source_mappings`
-  - Sync-/Provider-Status
-- Referenzen:
-  - https://help.cardmarket.com/es/cardmarket-api
-  - https://api.cardmarket.com/ws/documentation/API_2.0:Main_Page
+- Führt keine HTML-Abfragen, Browser-Simulation oder Varianten-Probes gegen Cardmarket aus.
+- Ein automatisch gebauter Produktlink bleibt unbestätigt, bis er in der Kartenansicht
+  manuell bestätigt wurde.
+- Ein Link kann unabhängig von der automatischen Erzeugung manuell gesetzt, geändert,
+  entfernt und bestätigt werden.
+- Cardmarket-Preise werden manuell gepflegt. Eine automatische Preisabfrage bleibt
+  deaktiviert, bis autorisierte API-Zugangsdaten und eine passende API-Anbindung vorhanden sind.
+- Unbestätigte Kandidaten werden niemals als Quelle für einen Cardmarket-Preis verwendet.
+
+Die gekapselte Struktur für eine spätere autorisierte Anbindung bleibt erhalten:
+
+- `cardmarket_reference`
+- `cardmarket_product_url`
+- `source_mappings`
+- Provider- und Preisstatus
+
+Referenzen:
+
+- <https://help.cardmarket.com/en/cardmarket-api>
+- <https://api.cardmarket.com/ws/documentation/API_2.0:Main_Page>
 
 ## YGO Omega
 
-- Kein lokaler API-Zwang im System
-- Optionaler Pfad `YGO_OMEGA_DIRECTORY` kann gesetzt werden
-- Die App prueft dann nur den lokalen Installationspfad und dokumentiert den Status
-- Es wird bewusst keine unklare oder reverse-engineerte Produktiv-Integration vorgetaeuscht
-- Referenzen:
-  - https://forum.duelistsunite.org/t/installation-and-troubleshooting-guide/3802
-  - https://github.com/duelists-unite/omega-releases/releases
+- `YGO_OMEGA_DIRECTORY` kann optional auf eine lokale Installation zeigen.
+- Die Anwendung prüft nur den lokalen Pfad und zeigt dessen Status.
+- Eine nicht dokumentierte Produktivintegration wird bewusst nicht simuliert.
 
-## Offene Punkte fuer spaetere Ausbaustufen
+## Spätere Ausbaustufen
 
-- print-genaues EU-Pricing
-- Cardmarket OAuth-Implementierung, falls nutzbare offizielle Credentials vorliegen
-- lokale Omega-Deck- oder Datenbank-Synchronisierung, sobald ein stabiler, dokumentierbarer Zugriff vorliegt
+- Offizielles, druckgenaues EU-Pricing
+- Autorisierte Cardmarket-API-Anbindung
+- Dokumentierte Omega-Deck- oder Datenbanksynchronisierung

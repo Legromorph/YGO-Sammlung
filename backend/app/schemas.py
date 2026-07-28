@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domain.card_metadata import CanonicalCardKind
+
 
 class OrmSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -114,6 +116,7 @@ class CardLookupSuggestion(BaseModel):
     external_id: str
     name: str
     card_type: str | None = None
+    card_kind: CanonicalCardKind = CanonicalCardKind.OTHER
     attribute: str | None = None
     monster_type: str | None = None
     image_url: str | None = None
@@ -152,6 +155,7 @@ class CardLookupResponse(BaseModel):
     name: str
     effect_text: str | None = None
     card_type: str | None = None
+    card_kind: CanonicalCardKind = CanonicalCardKind.OTHER
     subtype: str | None = None
     attribute: str | None = None
     monster_type: str | None = None
@@ -200,8 +204,11 @@ class CardPayload(BaseModel):
     condition: str = "near_mint"
     quantity: int = Field(default=1, ge=1)
     purchase_price: float | None = Field(default=None, ge=0)
-    current_market_price: float | None = Field(default=None, ge=0)
+    current_market_price: float | None = Field(default=None, gt=0)
     current_price_currency: str = "EUR"
+    current_price_source: str | None = None
+    current_price_match_quality: str | None = None
+    current_price_note: str | None = None
     storage_location_id: int | None = None
     cardmarket_reference: str | None = None
     cardmarket_product_url: str | None = None
@@ -211,8 +218,6 @@ class CardPayload(BaseModel):
     cardmarket_product_name: str | None = None
     cardmarket_variant_name: str | None = None
     cardmarket_category: str | None = None
-    cardmarket_match_quality: str | None = None
-    cardmarket_verified_at: datetime | None = None
     cardmarket_expected_rarity: str | None = None
     cardmarket_expected_language: str | None = None
     cardmarket_expected_set_name: str | None = None
@@ -221,6 +226,7 @@ class CardPayload(BaseModel):
     external_ids: dict[str, str] = Field(default_factory=dict)
     effect_text: str | None = None
     card_type: str | None = None
+    card_kind: CanonicalCardKind | None = None
     subtype: str | None = None
     attribute: str | None = None
     monster_type: str | None = None
@@ -235,6 +241,11 @@ class CardPayload(BaseModel):
     pendulum_effect: str | None = None
     spell_trap_type: str | None = None
     increment_existing_quantity_on_duplicate: bool = False
+
+
+class CardmarketLinkPayload(BaseModel):
+    url: str | None = None
+    confirmed: bool = False
 
 
 class CardSummary(BaseModel):
@@ -257,6 +268,7 @@ class CardSummary(BaseModel):
     price_change_30d: float | None = None
     trend_score: float | None = None
     card_type: str | None = None
+    card_kind: CanonicalCardKind = CanonicalCardKind.OTHER
     attribute: str | None = None
     monster_type: str | None = None
     atk: int | None = None
@@ -280,6 +292,8 @@ class CardSummary(BaseModel):
 
 
 class CardDetail(CardSummary):
+    stored_market_price: float | None = None
+    stored_price_currency: str | None = None
     effect_text: str | None = None
     subtype: str | None = None
     archetype: str | None = None
@@ -348,6 +362,7 @@ class SetCardRow(BaseModel):
     set_code: str | None = None
     rarity: str | None = None
     card_type: str | None = None
+    card_kind: CanonicalCardKind = CanonicalCardKind.OTHER
     image_url: str
     existing_quantity: int = 0
     current_market_price: float | None = None

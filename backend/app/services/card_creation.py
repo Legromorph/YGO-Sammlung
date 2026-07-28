@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 import logging
 
 from sqlalchemy import and_, or_, select
@@ -13,6 +12,7 @@ from app.schemas import CardPayload, CardSummary
 from app.services.app_settings import get_app_settings
 from app.services.cards import get_card_detail, serialize_card_summary, upsert_card
 from app.services.sync import queue_price_update_job, queue_sync_job
+from app.time_utils import utc_now
 
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ class CardCreationOrchestrator:
                 card_print_ids=[item.card_print_id],
                 trigger="create_card",
                 reason="new_card_created",
-                available_at=datetime.utcnow(),
+                available_at=utc_now(),
                 priority=settings.price_monitor_new_priority,
             )
         except Exception as exc:  # pragma: no cover - defensive post-create trigger
@@ -68,7 +68,7 @@ class CardCreationOrchestrator:
                     "trigger": "create_card",
                     "reason": "new_card_created",
                 },
-                available_at=datetime.utcnow(),
+                available_at=utc_now(),
             )
         except Exception as exc:  # pragma: no cover - defensive post-create trigger
             logger.exception("Failed to queue initial image sync for card print %s: %s", item.card_print_id, exc)

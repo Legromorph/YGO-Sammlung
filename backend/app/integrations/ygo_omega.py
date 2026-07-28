@@ -17,7 +17,7 @@ class YgoOmegaProbe:
                 "configured": False,
                 "available": False,
                 "active": False,
-                "notes": "Kein lokaler Omega-Pfad konfiguriert. Die Architektur bleibt fuer eine spaetere lokale Integration vorbereitet.",
+                "notes": "Kein lokaler Omega-Pfad konfiguriert. Die Architektur bleibt für eine spätere lokale Integration vorbereitet.",
             }
 
         base_path = Path(settings.ygo_omega_directory)

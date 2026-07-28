@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-
-def utcnow() -> datetime:
-    return datetime.utcnow()
+from app.domain.card_metadata import CanonicalCardKind
+from app.time_utils import utc_now
 
 
 class Base(DeclarativeBase):
@@ -15,17 +14,24 @@ class Base(DeclarativeBase):
 
 
 class TimestampMixin:
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 
 class Card(TimestampMixin, Base):
     __tablename__ = "cards"
+    __table_args__ = (
+        CheckConstraint(
+            "card_kind IN ('monster', 'spell', 'trap', 'skill', 'token', 'other')",
+            name="ck_cards_card_kind",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255), index=True)
     normalized_name: Mapped[str] = mapped_column(String(255), index=True)
     card_type: Mapped[str | None] = mapped_column(String(120))
+    card_kind: Mapped[str] = mapped_column(String(20), default=CanonicalCardKind.OTHER.value, index=True)
     subtype: Mapped[str | None] = mapped_column(String(120))
     frame_type: Mapped[str | None] = mapped_column(String(80))
     description: Mapped[str | None] = mapped_column(Text)
@@ -43,7 +49,7 @@ class Card(TimestampMixin, Base):
     spell_trap_type: Mapped[str | None] = mapped_column(String(80))
     limitations: Mapped[dict | None] = mapped_column(JSON)
     source_payload: Mapped[dict | None] = mapped_column(JSON)
-    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     card_prints: Mapped[list["CardPrint"]] = relationship(back_populates="card", cascade="all, delete-orphan")
 
@@ -66,10 +72,10 @@ class CardSet(TimestampMixin, Base):
     cardmarket_set_name: Mapped[str | None] = mapped_column(String(255))
     cardmarket_aliases: Mapped[list[str] | None] = mapped_column(JSON)
     cardmarket_slug_match_quality: Mapped[str | None] = mapped_column(String(40))
-    cardmarket_slug_verified_at: Mapped[datetime | None] = mapped_column(DateTime)
-    catalog_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
-    cards_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
-    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    cardmarket_slug_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    catalog_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cards_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     card_prints: Mapped[list["CardPrint"]] = relationship(back_populates="card_set")
     purchase_batches: Mapped[list["PurchaseBatch"]] = relationship(back_populates="card_set")
@@ -126,7 +132,7 @@ class CardPrint(TimestampMixin, Base):
     cardmarket_variant_name: Mapped[str | None] = mapped_column(String(255))
     cardmarket_category: Mapped[str | None] = mapped_column(String(80), default="Products/Singles")
     cardmarket_match_quality: Mapped[str | None] = mapped_column(String(40))
-    cardmarket_verified_at: Mapped[datetime | None] = mapped_column(DateTime)
+    cardmarket_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cardmarket_expected_rarity: Mapped[str | None] = mapped_column(String(120))
     cardmarket_expected_language: Mapped[str | None] = mapped_column(String(16))
     cardmarket_expected_set_name: Mapped[str | None] = mapped_column(String(255))
@@ -139,6 +145,24 @@ class CardPrint(TimestampMixin, Base):
 
 class InventoryItem(TimestampMixin, Base):
     __tablename__ = "inventory_items"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_inventory_items_quantity_positive"),
+        CheckConstraint("purchase_price IS NULL OR purchase_price >= 0", name="ck_inventory_items_purchase_price_nonnegative"),
+        CheckConstraint(
+            "allocated_purchase_total IS NULL OR allocated_purchase_total >= 0",
+            name="ck_inventory_items_allocated_total_nonnegative",
+        ),
+        CheckConstraint(
+            "current_market_price IS NULL OR current_market_price > 0",
+            name="ck_inventory_items_market_price_positive",
+        ),
+        Index(
+            "ix_inventory_items_print_condition_location",
+            "card_print_id",
+            "condition",
+            "storage_location_id",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     card_print_id: Mapped[int] = mapped_column(ForeignKey("card_prints.id", ondelete="CASCADE"))
@@ -151,7 +175,7 @@ class InventoryItem(TimestampMixin, Base):
     current_market_price: Mapped[float | None] = mapped_column(Numeric(10, 2))
     current_price_currency: Mapped[str] = mapped_column(String(8), default="EUR")
     last_price_source: Mapped[str | None] = mapped_column(String(80))
-    last_priced_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    last_priced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_price_match_quality: Mapped[str | None] = mapped_column(String(40))
     last_price_note: Mapped[str | None] = mapped_column(Text)
     price_change_7d: Mapped[float | None] = mapped_column(default=0)
@@ -178,6 +202,14 @@ class InventoryItem(TimestampMixin, Base):
 
 class PurchaseBatch(TimestampMixin, Base):
     __tablename__ = "purchase_batches"
+    __table_args__ = (
+        CheckConstraint("total_price >= 0", name="ck_purchase_batches_total_price_nonnegative"),
+        CheckConstraint("total_units >= 0", name="ck_purchase_batches_total_units_nonnegative"),
+        CheckConstraint(
+            "allocated_unit_price IS NULL OR allocated_unit_price >= 0",
+            name="ck_purchase_batches_allocated_unit_price_nonnegative",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source_type: Mapped[str] = mapped_column(String(80), index=True, default="set_import")
@@ -202,6 +234,17 @@ class PurchaseBatch(TimestampMixin, Base):
 
 class PurchaseBatchItem(TimestampMixin, Base):
     __tablename__ = "purchase_batch_items"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_purchase_batch_items_quantity_positive"),
+        CheckConstraint(
+            "allocated_purchase_price_per_unit IS NULL OR allocated_purchase_price_per_unit >= 0",
+            name="ck_purchase_batch_items_unit_price_nonnegative",
+        ),
+        CheckConstraint(
+            "allocated_purchase_total >= 0",
+            name="ck_purchase_batch_items_total_nonnegative",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     purchase_batch_id: Mapped[int] = mapped_column(ForeignKey("purchase_batches.id", ondelete="CASCADE"))
@@ -218,6 +261,10 @@ class PurchaseBatchItem(TimestampMixin, Base):
 
 class PriceHistory(TimestampMixin, Base):
     __tablename__ = "price_history"
+    __table_args__ = (
+        CheckConstraint("price > 0", name="ck_price_history_price_positive"),
+        Index("ix_price_history_inventory_captured", "inventory_item_id", "captured_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     inventory_item_id: Mapped[int] = mapped_column(ForeignKey("inventory_items.id", ondelete="CASCADE"), index=True)
@@ -227,7 +274,7 @@ class PriceHistory(TimestampMixin, Base):
     currency: Mapped[str] = mapped_column(String(8), default="EUR")
     price: Mapped[float] = mapped_column(Numeric(10, 2))
     payload: Mapped[dict | None] = mapped_column(JSON)
-    captured_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
     inventory_item: Mapped[InventoryItem] = relationship(back_populates="price_history")
     card_print: Mapped[CardPrint] = relationship()
@@ -246,6 +293,7 @@ class Deck(TimestampMixin, Base):
 
 class DeckCard(TimestampMixin, Base):
     __tablename__ = "deck_cards"
+    __table_args__ = (CheckConstraint("quantity > 0", name="ck_deck_cards_quantity_positive"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     deck_id: Mapped[int] = mapped_column(ForeignKey("decks.id", ondelete="CASCADE"))
@@ -274,6 +322,7 @@ class Collection(TimestampMixin, Base):
 
 class CollectionCard(TimestampMixin, Base):
     __tablename__ = "collection_cards"
+    __table_args__ = (CheckConstraint("quantity > 0", name="ck_collection_cards_quantity_positive"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     collection_id: Mapped[int] = mapped_column(ForeignKey("collections.id", ondelete="CASCADE"))
@@ -289,18 +338,31 @@ class CollectionCard(TimestampMixin, Base):
 
 class PriceMonitorState(TimestampMixin, Base):
     __tablename__ = "price_monitor_states"
+    __table_args__ = (
+        CheckConstraint("price_check_interval_hours > 0", name="ck_price_monitor_interval_positive"),
+        CheckConstraint("failure_count >= 0", name="ck_price_monitor_failure_count_nonnegative"),
+        CheckConstraint(
+            "consecutive_stable_checks >= 0",
+            name="ck_price_monitor_stable_checks_nonnegative",
+        ),
+        Index(
+            "ix_price_monitor_due_priority",
+            "next_price_check_at",
+            "price_check_priority",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     inventory_item_id: Mapped[int] = mapped_column(ForeignKey("inventory_items.id", ondelete="CASCADE"), unique=True, index=True)
-    last_price_check_at: Mapped[datetime | None] = mapped_column(DateTime)
-    next_price_check_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    last_price_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_price_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     price_check_interval_hours: Mapped[int] = mapped_column(Integer, default=24)
     price_volatility_score: Mapped[float] = mapped_column(default=0)
     price_check_priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
     price_stability_state: Mapped[str] = mapped_column(String(50), default="new", index=True)
     failure_count: Mapped[int] = mapped_column(Integer, default=0)
     consecutive_stable_checks: Mapped[int] = mapped_column(Integer, default=0)
-    last_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_message: Mapped[str | None] = mapped_column(Text)
 
     inventory_item: Mapped[InventoryItem] = relationship(back_populates="price_monitor_state")
@@ -308,26 +370,41 @@ class PriceMonitorState(TimestampMixin, Base):
 
 class SyncJob(TimestampMixin, Base):
     __tablename__ = "sync_jobs"
+    __table_args__ = (
+        Index(
+            "ix_sync_jobs_claim",
+            "status",
+            "available_at",
+            "priority",
+            "created_at",
+        ),
+        Index(
+            "uq_sync_jobs_running_lock_key",
+            "lock_key",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     job_type: Mapped[str] = mapped_column(String(80), index=True)
     provider_key: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(40), index=True, default="pending")
     lock_key: Mapped[str] = mapped_column(String(120))
-    available_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
     payload: Mapped[dict | None] = mapped_column(JSON)
     log_excerpt: Mapped[str | None] = mapped_column(Text)
     log_details: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Progress tracking fields
     total_items: Mapped[int | None] = mapped_column(Integer)
     processed_items: Mapped[int | None] = mapped_column(Integer, default=0)
     successful_items: Mapped[int | None] = mapped_column(Integer, default=0)
     failed_items: Mapped[int | None] = mapped_column(Integer, default=0)
-    next_scheduled_item_at: Mapped[datetime | None] = mapped_column(DateTime)
+    next_scheduled_item_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer)
 
 
@@ -346,7 +423,7 @@ class ImageAsset(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(40), default="pending")
     last_error: Mapped[str | None] = mapped_column(Text)
     is_placeholder: Mapped[bool] = mapped_column(Boolean, default=False)
-    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime)
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     card_print: Mapped[CardPrint] = relationship(back_populates="image_assets")
 
@@ -361,4 +438,4 @@ class SourceMapping(TimestampMixin, Base):
     external_id: Mapped[str] = mapped_column(String(255), index=True)
     external_url: Mapped[str | None] = mapped_column(String(600))
     payload: Mapped[dict | None] = mapped_column(JSON)
-    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

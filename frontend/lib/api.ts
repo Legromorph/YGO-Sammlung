@@ -78,7 +78,7 @@ export function getApiErrorMessage(error: unknown): string {
     }
 
     if (error.code === 'ERR_NETWORK' || error.message === 'Network Error') {
-      return `Backend nicht erreichbar unter ${apiBaseUrl}. Pruefe, ob die API auf Port 8000 laeuft.`;
+      return `Backend nicht erreichbar unter ${apiBaseUrl}. Prüfe, ob die API auf Port 8000 läuft.`;
     }
 
     if (error.response?.status) {

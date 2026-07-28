@@ -31,6 +31,7 @@ import {
 } from '@mui/material';
 
 import CardFormDialog from '../../components/card-form-dialog';
+import PageHeader from '../../components/page-header';
 import api, { buildQuery, getApiErrorMessage, resolveMediaUrl } from '../../lib/api';
 import { formatCurrency, formatPercent } from '../../lib/format';
 import { pricingColor, pricingLabel, pricingUpdateLabel } from '../../lib/pricing';
@@ -201,7 +202,7 @@ export default function CardsPage() {
   };
 
   const handleDelete = async (cardId: number) => {
-    if (!window.confirm('Diese Kartenposition wirklich loeschen?')) {
+    if (!window.confirm('Diese Kartenposition wirklich löschen?')) {
       return;
     }
 
@@ -215,26 +216,15 @@ export default function CardsPage() {
 
   return (
     <Stack spacing={3}>
-      <Paper
-        sx={{
-          p: 3,
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 2,
-          justifyContent: 'space-between',
-          alignItems: 'center',
-        }}
-      >
-        <Box>
-          <Typography variant="h4">Kartenverwaltung</Typography>
-          <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-            Filterbare Inventaransicht mit Preisen, Lagerorten und lokalen Bildern.
-          </Typography>
-        </Box>
-        <Button startIcon={<AddRoundedIcon />} variant="contained" onClick={openCreateDialog}>
-          Karte anlegen
-        </Button>
-      </Paper>
+      <PageHeader
+        title="Karten"
+        description="Inventar durchsuchen, Preise prüfen und Karten bearbeiten."
+        action={
+          <Button startIcon={<AddRoundedIcon />} variant="contained" onClick={openCreateDialog}>
+            Karte anlegen
+          </Button>
+        }
+      />
 
       {error ? <Alert severity="error">{error}</Alert> : null}
 
@@ -398,7 +388,7 @@ export default function CardsPage() {
         <DialogContent>
           <Typography>
             {duplicateConflict?.message ||
-              'Diese Kartenposition existiert bereits. Du kannst die bestehende Menge erhoehen oder die Eingaben weiter bearbeiten.'}
+              'Diese Kartenposition existiert bereits. Du kannst die bestehende Menge erhöhen oder die Eingaben weiter bearbeiten.'}
           </Typography>
           {duplicateConflict ? (
             <Typography color="text.secondary" sx={{ mt: 1.25 }}>
@@ -422,8 +412,8 @@ export default function CardsPage() {
             disabled={duplicateSaveLoading}
           >
             {duplicateSaveLoading
-              ? 'Erhoehe Menge...'
-              : `Menge um +${duplicateConflict?.increment_by ?? 1} erhoehen`}
+              ? 'Erhöhe Menge...'
+              : `Menge um +${duplicateConflict?.increment_by ?? 1} erhöhen`}
           </Button>
         </DialogActions>
       </Dialog>

@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ async def _fetch_rate(source_currency: str, target_currency: str) -> Decimal | N
 
     cache_key = (source_currency, target_currency)
     cached = _rate_cache.get(cache_key)
-    if cached and cached[1] >= datetime.utcnow() - _RATE_CACHE_TTL:
+    if cached and cached[1] >= utc_now() - _RATE_CACHE_TTL:
         return cached[0]
 
     url = f"https://api.frankfurter.dev/v2/rate/{source_currency}/{target_currency}"
@@ -42,9 +43,9 @@ async def _fetch_rate(source_currency: str, target_currency: str) -> Decimal | N
         logger.warning("Currency conversion rate fetch failed for %s -> %s: %s", source_currency, target_currency, exc)
         return None
 
-    _rate_cache[cache_key] = (rate, datetime.utcnow())
+    _rate_cache[cache_key] = (rate, utc_now())
     if rate:
-        _rate_cache[(target_currency, source_currency)] = ((Decimal("1") / rate).quantize(Decimal("0.0000001"), rounding=ROUND_HALF_UP), datetime.utcnow())
+        _rate_cache[(target_currency, source_currency)] = ((Decimal("1") / rate).quantize(Decimal("0.0000001"), rounding=ROUND_HALF_UP), utc_now())
     return rate
 
 
@@ -68,4 +69,3 @@ async def convert_amount(
         return None
 
     return (decimal_amount * rate).quantize(TWO_DP, rounding=ROUND_HALF_UP)
-

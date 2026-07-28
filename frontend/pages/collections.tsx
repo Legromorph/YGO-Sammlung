@@ -5,6 +5,7 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import { Alert, Box, Button, Chip, CircularProgress, IconButton, Paper, Stack, Typography } from '@mui/material';
 
 import CollectionFormDialog from '../components/collection-form-dialog';
+import PageHeader from '../components/page-header';
 import api, { getApiErrorMessage } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { CollectionDetail, CollectionPayload, CollectionSummary } from '../lib/types';
@@ -63,7 +64,7 @@ export default function CollectionsPage() {
   };
 
   const handleDelete = async (collectionId: number) => {
-    if (!window.confirm('Diese Sammlung wirklich loeschen?')) {
+    if (!window.confirm('Diese Sammlung wirklich löschen?')) {
       return;
     }
     try {
@@ -76,24 +77,22 @@ export default function CollectionsPage() {
 
   return (
     <Stack spacing={3}>
-      <Paper sx={{ p: 3, display: 'flex', justifyContent: 'space-between', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Box>
-          <Typography variant="h4">Sammlungen</Typography>
-          <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-            Freie Ordner und Kategorien fuer Staples, Verkauf, Favorites oder Projekte.
-          </Typography>
-        </Box>
-        <Button
-          startIcon={<AddRoundedIcon />}
-          variant="contained"
-          onClick={() => {
-            setEditingCollection(null);
-            setDialogOpen(true);
-          }}
-        >
-          Sammlung anlegen
-        </Button>
-      </Paper>
+      <PageHeader
+        title="Sammlungen"
+        description="Karten frei gruppieren, merken und bewerten."
+        action={
+          <Button
+            startIcon={<AddRoundedIcon />}
+            variant="contained"
+            onClick={() => {
+              setEditingCollection(null);
+              setDialogOpen(true);
+            }}
+          >
+            Sammlung anlegen
+          </Button>
+        }
+      />
 
       {error ? <Alert severity="error">{error}</Alert> : null}
 

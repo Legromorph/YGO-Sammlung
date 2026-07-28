@@ -5,6 +5,7 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import { Alert, Box, Button, Chip, CircularProgress, IconButton, Paper, Stack, Typography } from '@mui/material';
 
 import DeckFormDialog from '../components/deck-form-dialog';
+import PageHeader from '../components/page-header';
 import api, { getApiErrorMessage } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { DeckDetail, DeckPayload, DeckSummary } from '../lib/types';
@@ -63,7 +64,7 @@ export default function DecksPage() {
   };
 
   const handleDelete = async (deckId: number) => {
-    if (!window.confirm('Diese Deckliste wirklich loeschen?')) {
+    if (!window.confirm('Diese Deckliste wirklich löschen?')) {
       return;
     }
     try {
@@ -76,24 +77,22 @@ export default function DecksPage() {
 
   return (
     <Stack spacing={3}>
-      <Paper sx={{ p: 3, display: 'flex', justifyContent: 'space-between', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
-        <Box>
-          <Typography variant="h4">Decklisten</Typography>
-          <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-            Main-, Extra- und Side-Decks direkt gegen das Inventar referenzieren.
-          </Typography>
-        </Box>
-        <Button
-          startIcon={<AddRoundedIcon />}
-          variant="contained"
-          onClick={() => {
-            setEditingDeck(null);
-            setDialogOpen(true);
-          }}
-        >
-          Deck anlegen
-        </Button>
-      </Paper>
+      <PageHeader
+        title="Decklisten"
+        description="Decks verwalten und Karten aus dem Inventar zuordnen."
+        action={
+          <Button
+            startIcon={<AddRoundedIcon />}
+            variant="contained"
+            onClick={() => {
+              setEditingDeck(null);
+              setDialogOpen(true);
+            }}
+          >
+            Deck anlegen
+          </Button>
+        }
+      />
 
       {error ? <Alert severity="error">{error}</Alert> : null}
 

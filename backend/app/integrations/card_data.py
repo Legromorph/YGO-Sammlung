@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import date
 from difflib import SequenceMatcher
+import logging
 from typing import Any
 import re
 import unicodedata
@@ -10,6 +11,10 @@ import unicodedata
 import httpx
 
 from app.config import settings
+from app.domain.card_metadata import normalize_card_metadata
+
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_int(value: Any) -> int | None:
@@ -81,12 +86,33 @@ class YgoProDeckCardDataProvider:
                 "configured": True,
                 "available": False,
                 "active": settings.card_data_provider == self.provider_key,
-                "notes": f"Remote-Pruefung fehlgeschlagen: {exc}",
+                "notes": f"Remote-Prüfung fehlgeschlagen: {exc}",
             }
 
-    async def fetch_card(self, *, name: str | None = None, external_id: str | None = None, language: str | None = None) -> dict[str, Any] | None:
+    async def fetch_card(
+        self,
+        *,
+        name: str | None = None,
+        external_id: str | None = None,
+        language: str | None = None,
+        tcgplayer_data: bool = False,
+    ) -> dict[str, Any] | None:
+        def select_candidate(data: list[dict[str, Any]]) -> dict[str, Any] | None:
+            if external_id:
+                expected_id = str(external_id).strip()
+                return next((entry for entry in data if str(entry.get("id") or "").strip() == expected_id), None)
+            if name:
+                expected_name = _normalize_search_text(name)
+                return next(
+                    (entry for entry in data if _normalize_search_text(entry.get("name")) == expected_name),
+                    None,
+                )
+            return None
+
         async def attempt(request_language: str | None) -> dict[str, Any] | None:
             params: dict[str, Any] = {"misc": "yes"}
+            if tcgplayer_data:
+                params["tcgplayer_data"] = "yes"
             if external_id:
                 params["id"] = external_id
             elif name:
@@ -98,15 +124,23 @@ class YgoProDeckCardDataProvider:
                 params["language"] = request_language.lower()
 
             data = await self._request(params)
-            if data:
-                return self._normalize_card(data[0])
+            candidate = select_candidate(data)
+            if candidate:
+                return self._normalize_card(
+                    candidate,
+                    price_dataset="tcgplayer" if tcgplayer_data else "default",
+                )
 
             if name and not external_id:
                 params.pop("name", None)
                 params["fname"] = name
                 data = await self._request(params)
-                if data:
-                    return self._normalize_card(data[0])
+                candidate = select_candidate(data)
+                if candidate:
+                    return self._normalize_card(
+                        candidate,
+                        price_dataset="tcgplayer" if tcgplayer_data else "default",
+                    )
 
             return None
 
@@ -181,12 +215,21 @@ class YgoProDeckCardDataProvider:
             if entry.get("set_name")
         ]
 
-    async def fetch_cards_for_set(self, set_name: str, language: str | None = None) -> list[dict[str, Any]]:
+    async def fetch_cards_for_set(
+        self,
+        set_name: str,
+        language: str | None = None,
+        *,
+        tcgplayer_data: bool = False,
+    ) -> list[dict[str, Any]]:
         async def attempt(request_language: str | None) -> list[dict[str, Any]]:
             params: dict[str, Any] = {"cardset": set_name, "misc": "yes"}
+            if tcgplayer_data:
+                params["tcgplayer_data"] = "yes"
             if request_language and request_language.lower() not in {"", "en"}:
                 params["language"] = request_language.lower()
-            return [self._normalize_card(entry) for entry in await self._request(params)]
+            price_dataset = "tcgplayer" if tcgplayer_data else "default"
+            return [self._normalize_card(entry, price_dataset=price_dataset) for entry in await self._request(params)]
 
         direct = await attempt(language)
         if direct:
@@ -205,11 +248,47 @@ class YgoProDeckCardDataProvider:
 
     async def _request(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds, headers=self.default_headers) as client:
-            response = await client.get(f"{settings.ygoprodeck_api_base_url}/cardinfo.php", params=params)
-            if response.status_code >= 400:
-                return []
-            payload = response.json()
-        return payload.get("data", [])
+            for attempt in range(3):
+                try:
+                    response = await client.get(f"{settings.ygoprodeck_api_base_url}/cardinfo.php", params=params)
+                except httpx.RequestError as exc:
+                    if attempt == 2:
+                        logger.warning("YGOPRODeck request failed after 3 attempts: %s", exc)
+                        return []
+                    await asyncio.sleep(2**attempt)
+                    continue
+
+                if response.status_code == 429 or response.status_code >= 500:
+                    if attempt == 2:
+                        logger.warning(
+                            "YGOPRODeck request failed after 3 attempts with HTTP %s",
+                            response.status_code,
+                        )
+                        return []
+                    retry_after = response.headers.get("Retry-After")
+                    try:
+                        delay_seconds = min(10.0, max(1.0, float(retry_after))) if retry_after else float(2**attempt)
+                    except ValueError:
+                        delay_seconds = float(2**attempt)
+                    await asyncio.sleep(delay_seconds)
+                    continue
+
+                if response.status_code >= 400:
+                    logger.warning("YGOPRODeck request returned HTTP %s for params %s", response.status_code, params)
+                    return []
+
+                try:
+                    payload = response.json()
+                except ValueError:
+                    logger.warning("YGOPRODeck returned an invalid JSON response.")
+                    return []
+                if not isinstance(payload, dict):
+                    logger.warning("YGOPRODeck returned an unexpected JSON payload.")
+                    return []
+                data = payload.get("data", [])
+                return data if isinstance(data, list) else []
+
+        return []
 
     async def _search_catalog_contains(
         self,
@@ -344,29 +423,31 @@ class YgoProDeckCardDataProvider:
             return int(ratio * 650)
         return 0
 
-    def _normalize_card(self, raw: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_card(self, raw: dict[str, Any], *, price_dataset: str = "default") -> dict[str, Any]:
         card_sets = raw.get("card_sets", []) or []
         card_images = raw.get("card_images", []) or []
         prices = (raw.get("card_prices") or [{}])[0]
+        metadata = normalize_card_metadata(
+            card_type=raw.get("type"),
+            subtype=raw.get("frameType"),
+            frame_type=raw.get("frameType"),
+            race=raw.get("race"),
+            attribute=raw.get("attribute"),
+            archetype=raw.get("archetype"),
+            atk=raw.get("atk"),
+            defense=raw.get("def"),
+            level=raw.get("level"),
+            rank=raw.get("rank"),
+            link_rating=raw.get("linkval"),
+            link_arrows=raw.get("linkmarkers"),
+            pendulum_scale=raw.get("scale"),
+            pendulum_effect=raw.get("pend_desc"),
+        )
         return {
             "external_id": str(raw.get("id")),
             "name": raw.get("name"),
             "description": raw.get("desc"),
-            "card_type": raw.get("type"),
-            "subtype": raw.get("frameType"),
-            "frame_type": raw.get("frameType"),
-            "attribute": raw.get("attribute"),
-            "monster_type": raw.get("race"),
-            "archetype": raw.get("archetype"),
-            "atk": _parse_int(raw.get("atk")),
-            "defense": _parse_int(raw.get("def")),
-            "level": _parse_int(raw.get("level")),
-            "rank": _parse_int(raw.get("rank")),
-            "link_rating": _parse_int(raw.get("linkval")),
-            "link_arrows": raw.get("linkmarkers") or [],
-            "pendulum_scale": _parse_int(raw.get("scale")),
-            "pendulum_effect": raw.get("pend_desc"),
-            "spell_trap_type": raw.get("race") if raw.get("type") in {"Spell Card", "Trap Card"} else None,
+            **metadata.as_dict(),
             "limitations": raw.get("banlist_info"),
             "card_sets": [
                 {
@@ -375,11 +456,15 @@ class YgoProDeckCardDataProvider:
                     "set_rarity": entry.get("set_rarity"),
                     "set_rarity_code": entry.get("set_rarity_code"),
                     "set_price": entry.get("set_price"),
+                    "set_price_low": entry.get("set_price_low"),
+                    "set_edition": entry.get("set_edition"),
+                    "set_url": entry.get("set_url"),
                 }
                 for entry in card_sets
             ],
             "card_images": card_images,
             "prices": prices,
+            "price_dataset": price_dataset,
             "payload": raw,
         }
 

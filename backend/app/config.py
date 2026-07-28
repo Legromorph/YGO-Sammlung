@@ -27,11 +27,8 @@ class Settings(BaseSettings):
 
     ygoprodeck_api_base_url: str = "https://db.ygoprodeck.com/api/v7"
     request_timeout_seconds: int = 20
-    cardmarket_offer_sample_size: int = 5
-    cardmarket_low_outlier_ratio_vs_next: float = 0.5
-    cardmarket_low_outlier_ratio_vs_cluster: float = 0.4
-    cardmarket_playwright_timeout_seconds: int = 90
-    cardmarket_trust_verified_product_urls: bool = True
+    cardmarket_variant_probe_max: int = 12
+    price_allow_card_level_fallback: bool = True
     sync_batch_size: int = 50
 
     price_monitor_night_window_start_hour: int = 1

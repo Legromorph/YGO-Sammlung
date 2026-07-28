@@ -11,9 +11,11 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import session_scope
+from app.integrations.prices import get_active_price_provider
 from app.models import InventoryItem, PriceMonitorState, SyncJob
 from app.services.price_monitor import PRICE_STATE_HIGH_VOLATILITY, PRICE_STATE_NEW, PRICE_STATE_RETRY, PRICE_STATE_VOLATILE
 from app.services.sync import _extract_price_targets, queue_price_update_job, queue_sync_job
+from app.time_utils import utc_now
 
 
 logging.basicConfig(
@@ -58,7 +60,7 @@ def _request_spacing_seconds() -> int:
     return max(15, math.ceil(60 / per_minute), math.ceil(3600 / per_hour))
 
 
-async def _active_price_job_targets() -> tuple[set[int], set[int], datetime | None]:
+async def _active_price_job_targets() -> tuple[set[int], set[int], datetime | None, bool]:
     async with session_scope() as db:
         result = await db.execute(
             select(SyncJob)
@@ -68,31 +70,39 @@ async def _active_price_job_targets() -> tuple[set[int], set[int], datetime | No
         inventory_item_ids: set[int] = set()
         card_print_ids: set[int] = set()
         latest_available_at: datetime | None = None
+        has_global_job = False
         for job in result.scalars().all():
             active_inventory_ids, active_print_ids = _extract_price_targets(job.payload)
+            has_global_job = has_global_job or not active_inventory_ids and not active_print_ids
             inventory_item_ids.update(active_inventory_ids)
             card_print_ids.update(active_print_ids)
             if job.available_at and (latest_available_at is None or job.available_at > latest_available_at):
                 latest_available_at = job.available_at
-        return inventory_item_ids, card_print_ids, latest_available_at
+        return inventory_item_ids, card_print_ids, latest_available_at, has_global_job
 
 
 async def _enqueue_due_price_monitor_jobs() -> int:
-    now = datetime.utcnow()
-    active_inventory_ids, _active_print_ids, latest_available_at = await _active_price_job_targets()
-    spacing_seconds = _request_spacing_seconds()
-    night_start, _night_end = _night_window_bounds(now)
-    next_slot_at = max(now, (latest_available_at + timedelta(seconds=spacing_seconds)) if latest_available_at else now)
+    now = utc_now()
+    provider = get_active_price_provider()
+    if provider is None:
+        logger.error("Price scheduler is disabled because PRICE_PROVIDER=%s is unknown.", settings.price_provider)
+        return 0
+    if provider.provider_key == "cardmarket":
+        logger.error("Price scheduler is disabled because Cardmarket is configured for manual prices only.")
+        return 0
 
-    enqueued = 0
+    active_inventory_ids, active_print_ids, latest_available_at, has_global_job = await _active_price_job_targets()
+    if has_global_job:
+        return 0
+
+    night_start, _night_end = _night_window_bounds(now)
+
     async with session_scope() as db:
-        result = await db.execute(
+        stmt = (
             select(PriceMonitorState)
             .join(PriceMonitorState.inventory_item)
             .options(
-                selectinload(PriceMonitorState.inventory_item).selectinload(InventoryItem.card_print),
-                selectinload(PriceMonitorState.inventory_item).selectinload(InventoryItem.price_history),
-                selectinload(PriceMonitorState.inventory_item).selectinload(InventoryItem.price_monitor_state),
+                selectinload(PriceMonitorState.inventory_item),
             )
             .where(
                 or_(
@@ -105,52 +115,112 @@ async def _enqueue_due_price_monitor_jobs() -> int:
                 PriceMonitorState.next_price_check_at.asc().nullsfirst(),
                 PriceMonitorState.inventory_item_id.asc(),
             )
-            .limit(settings.price_monitor_scheduler_batch_size)
         )
+        if active_inventory_ids:
+            stmt = stmt.where(~PriceMonitorState.inventory_item_id.in_(active_inventory_ids))
+        if active_print_ids:
+            stmt = stmt.where(~InventoryItem.card_print_id.in_(active_print_ids))
+        stmt = stmt.limit(settings.price_monitor_scheduler_batch_size)
+
+        result = await db.execute(stmt)
         states = result.scalars().all()
-        if not states:
-            return 0
+        due_entries = [
+            {
+                "state_id": state.id,
+                "inventory_item_id": state.inventory_item.id,
+                "card_print_id": state.inventory_item.card_print_id,
+                "state": state.price_stability_state or PRICE_STATE_NEW,
+                "priority": state.price_check_priority or 0,
+            }
+            for state in states
+        ]
 
-        for state in states:
-            item = state.inventory_item
-            if item.id in active_inventory_ids:
+    if not due_entries:
+        return 0
+
+    enqueued_state_ids: list[int] = []
+    enqueued_jobs = 0
+    if provider.provider_key != "cardmarket":
+        batches: dict[str, list[dict[str, int | str]]] = {"urgent": [], "night": []}
+        for entry in due_entries:
+            urgent = entry["state"] in {
+                PRICE_STATE_NEW,
+                PRICE_STATE_RETRY,
+                PRICE_STATE_VOLATILE,
+                PRICE_STATE_HIGH_VOLATILITY,
+            } or int(entry["priority"]) >= settings.price_monitor_volatile_priority
+            batches["urgent" if urgent else "night"].append(entry)
+
+        for batch_name, batch_entries in batches.items():
+            if not batch_entries:
                 continue
-
-            urgency_state = state.price_stability_state or PRICE_STATE_NEW
-            urgent = urgency_state in {PRICE_STATE_NEW, PRICE_STATE_RETRY, PRICE_STATE_VOLATILE, PRICE_STATE_HIGH_VOLATILITY} or (state.price_check_priority or 0) >= settings.price_monitor_volatile_priority
-
-            base_slot_at = next_slot_at if urgent else max(night_start, next_slot_at)
-            jitter = timedelta(seconds=random.randint(0, max(0, settings.price_monitor_jitter_seconds)))
-            available_at = base_slot_at + jitter
-
+            available_at = now if batch_name == "urgent" else max(now, night_start) + timedelta(
+                seconds=random.randint(0, max(0, settings.price_monitor_jitter_seconds))
+            )
             job = await queue_price_update_job(
-                inventory_item_ids=[item.id],
-                card_print_ids=[item.card_print_id],
+                inventory_item_ids=[int(entry["inventory_item_id"]) for entry in batch_entries],
+                card_print_ids=[int(entry["card_print_id"]) for entry in batch_entries],
                 trigger="scheduler",
-                reason=f"state:{urgency_state}",
+                reason=f"monitor_batch:{batch_name}",
                 available_at=available_at,
-                priority=state.price_check_priority or 0,
+                priority=max(int(entry["priority"]) for entry in batch_entries),
             )
-            state.last_enqueued_at = now
-            enqueued += 1
-            next_slot_at = base_slot_at + timedelta(seconds=spacing_seconds)
-
+            enqueued_state_ids.extend(int(entry["state_id"]) for entry in batch_entries)
+            enqueued_jobs += 1
             logger.info(
-                "Scheduled price update job %s for inventory item %s at %s (state=%s priority=%s)",
+                "Scheduled batched %s price job %s for %s item(s) at %s.",
+                provider.provider_key,
                 job.id,
-                item.id,
+                len(batch_entries),
                 available_at.isoformat(),
-                urgency_state,
-                state.price_check_priority or 0,
+            )
+    else:
+        spacing_seconds = _request_spacing_seconds()
+        next_slot_at = max(now, (latest_available_at + timedelta(seconds=spacing_seconds)) if latest_available_at else now)
+        for entry in due_entries:
+            urgent = entry["state"] in {
+                PRICE_STATE_NEW,
+                PRICE_STATE_RETRY,
+                PRICE_STATE_VOLATILE,
+                PRICE_STATE_HIGH_VOLATILITY,
+            } or int(entry["priority"]) >= settings.price_monitor_volatile_priority
+            base_slot_at = next_slot_at if urgent else max(night_start, next_slot_at)
+            available_at = base_slot_at + timedelta(
+                seconds=random.randint(0, max(0, settings.price_monitor_jitter_seconds))
+            )
+            job = await queue_price_update_job(
+                inventory_item_ids=[int(entry["inventory_item_id"])],
+                card_print_ids=[int(entry["card_print_id"])],
+                trigger="scheduler",
+                reason=f"state:{entry['state']}",
+                available_at=available_at,
+                priority=int(entry["priority"]),
+            )
+            enqueued_state_ids.append(int(entry["state_id"]))
+            enqueued_jobs += 1
+            next_slot_at = base_slot_at + timedelta(seconds=spacing_seconds)
+            logger.info(
+                "Scheduled Cardmarket price job %s for inventory item %s at %s.",
+                job.id,
+                entry["inventory_item_id"],
+                available_at.isoformat(),
             )
 
-    return enqueued
+    if enqueued_state_ids:
+        async with session_scope() as db:
+            result = await db.execute(
+                select(PriceMonitorState).where(PriceMonitorState.id.in_(enqueued_state_ids))
+            )
+            for state in result.scalars().all():
+                state.last_enqueued_at = now
+
+    return enqueued_jobs
 
 
 async def run_scheduler() -> None:
     intervals = _schedule_map()
     next_run = {
-        job_type: datetime.utcnow() + timedelta(minutes=minutes)
+        job_type: utc_now() + timedelta(minutes=minutes)
         for job_type, minutes in intervals.items()
         if minutes > 0
     }
@@ -162,7 +232,7 @@ async def run_scheduler() -> None:
             if enqueued_price_jobs:
                 logger.info("Enqueued %s due price monitor job(s)", enqueued_price_jobs)
 
-            now = datetime.utcnow()
+            now = utc_now()
             for job_type, scheduled_at in list(next_run.items()):
                 if now < scheduled_at:
                     continue

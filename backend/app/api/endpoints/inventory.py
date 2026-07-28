@@ -11,6 +11,7 @@ from app.database import get_db
 from app.schemas import BulkSetImportPayload, BulkSetImportResponse
 from app.services.inventory import bulk_add_inventory_from_set
 from app.services.sync import queue_price_update_job, queue_sync_job, serialize_sync_job
+from app.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ async def bulk_add_from_set(
                     card_print_ids=response.imported_card_print_ids,
                     trigger="bulk_import",
                     reason=f"purchase_batch:{response.purchase_batch_id}",
-                    available_at=datetime.utcnow(),
+                    available_at=utc_now(),
                     priority=settings.price_monitor_new_priority,
                 )
                 logger.info(
@@ -60,7 +61,7 @@ async def bulk_add_from_set(
                         "trigger": "bulk_import",
                         "reason": f"purchase_batch:{response.purchase_batch_id}",
                     },
-                    available_at=datetime.utcnow(),
+                    available_at=utc_now(),
                 )
         except Exception as exc:  # pragma: no cover - defensive fallback around broker/db availability
             logger.exception("Failed to queue post-import image sync for purchase batch %s: %s", response.purchase_batch_id, exc)

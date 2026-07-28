@@ -14,6 +14,7 @@ from app.schemas import (
     CardListResponse,
     CardLookupResponse,
     CardLookupSuggestion,
+    CardmarketLinkPayload,
     CardPayload,
     CardSummary,
     PriceHistoryPoint,
@@ -26,14 +27,15 @@ from app.services.cards import (
     delete_card,
     get_card_detail,
     get_card_lookup,
-    get_card_lookup_from_cardmarket_url,
     get_filter_options,
     list_cards,
     price_history_for_card,
     search_card_catalog,
+    update_cardmarket_link,
     upsert_card,
 )
 from app.services.sync import queue_price_update_job, serialize_sync_job
+from app.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -130,20 +132,6 @@ async def card_lookup_autofill(
     return lookup
 
 
-@router.get("/lookup/cardmarket-link", response_model=CardLookupResponse)
-async def cardmarket_link_lookup(
-    url: str = Query(min_length=10),
-    language: str = Query(default="de,en", min_length=2, max_length=16),
-    db: AsyncSession = Depends(get_db),
-) -> CardLookupResponse:
-    try:
-        return await get_card_lookup_from_cardmarket_url(db, url=url, language=language)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Cardmarket-Link konnte nicht gelesen werden: {exc}") from exc
-
-
 @router.post("/", response_model=CardSummary, status_code=status.HTTP_201_CREATED)
 async def create_card(payload: CardPayload, db: AsyncSession = Depends(get_db)) -> CardSummary:
     try:
@@ -159,7 +147,7 @@ async def create_card(payload: CardPayload, db: AsyncSession = Depends(get_db)) 
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Karte wurde nach dem Anlegen nicht korrekt verarbeitet. Bitte Backend-Logs pruefen.",
+            detail="Karte wurde nach dem Anlegen nicht korrekt verarbeitet. Bitte Backend-Logs prüfen.",
         ) from exc
 
 
@@ -210,6 +198,21 @@ async def get_card_price_history(card_id: int, db: AsyncSession = Depends(get_db
     return await price_history_for_card(db, card_id)
 
 
+@router.put("/{card_id}/cardmarket-link", response_model=CardDetail)
+async def update_card_cardmarket_link(card_id: int, payload: CardmarketLinkPayload, db: AsyncSession = Depends(get_db)) -> CardDetail:
+    try:
+        item = await update_cardmarket_link(db, card_id, payload.url, confirmed=payload.confirmed)
+        await db.commit()
+        detail = await get_card_detail(db, item.id)
+        if not detail:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Card could not be reloaded after update")
+        return detail
+    except ValueError as exc:
+        await db.rollback()
+        status_code = status.HTTP_404_NOT_FOUND if "not found" in str(exc).lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
 @router.post("/{card_id}/price-update", response_model=SyncJobResponse, status_code=status.HTTP_202_ACCEPTED)
 async def trigger_price_update(card_id: int, db: AsyncSession = Depends(get_db)) -> SyncJobResponse:
     card = await get_card_detail(db, card_id)
@@ -221,7 +224,7 @@ async def trigger_price_update(card_id: int, db: AsyncSession = Depends(get_db))
         card_print_ids=[card.card_print_id],
         trigger="manual",
         reason="manual_price_update_button",
-        available_at=datetime.utcnow(),
+        available_at=utc_now(),
         priority=settings.price_monitor_manual_priority,
     )
     return serialize_sync_job(job)

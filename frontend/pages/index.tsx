@@ -4,6 +4,7 @@ import { Alert, Avatar, Box, Chip, CircularProgress, Grid, List, ListItemButton,
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import StatCard from '../components/stat-card';
+import PageHeader from '../components/page-header';
 import api, { getApiErrorMessage, resolveMediaUrl } from '../lib/api';
 import { formatCardPrintDescriptor } from '../lib/card-display';
 import { formatCurrency, formatDate, formatPercent } from '../lib/format';
@@ -220,51 +221,7 @@ export default function Home() {
 
   return (
     <Stack spacing={3}>
-      <Paper
-        sx={{
-          p: { xs: 2.5, md: 3.5 },
-          overflow: 'hidden',
-          background: 'linear-gradient(135deg, rgba(216,169,76,0.22), rgba(78,162,138,0.15) 55%, rgba(12,24,24,0.95))',
-        }}
-      >
-        <Grid container spacing={3} alignItems="center">
-          <Grid item xs={12} md={7}>
-            <Typography variant="overline" sx={{ color: 'primary.light', letterSpacing: 2.4 }}>
-              Collection Intelligence
-            </Typography>
-            <Typography variant="h3" sx={{ mt: 1.2, maxWidth: 620 }}>
-              Deine Sammlung auf einen Blick mit Preisen, Trends und echten Lagerorten.
-            </Typography>
-            <Typography color="text.secondary" sx={{ mt: 1.5, maxWidth: 620 }}>
-              Das Dashboard trennt Preissteigerungen, Preisrueckgaenge, aktuelle Trends, fehlende Preise und Review-Kandidaten jetzt sauber
-              voneinander.
-            </Typography>
-          </Grid>
-          <Grid item xs={12} md={5}>
-            <Box
-              sx={{
-                minHeight: 180,
-                borderRadius: 4,
-                p: 2.5,
-                background: 'rgba(8, 14, 14, 0.55)',
-                border: '1px solid rgba(255,255,255,0.08)',
-              }}
-            >
-              <Typography color="text.secondary">Review-Kandidaten</Typography>
-              <Typography variant="h2" sx={{ mt: 1.5 }}>
-                {stats.review_candidates.length}
-              </Typography>
-              <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-                Karten mit fehlendem Preis, unsicherem Match oder veralteten Daten.
-              </Typography>
-              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
-                <Chip label={`${stats.trending_cards.length} Trendkarten`} color="secondary" variant="outlined" />
-                <Chip label={`${stats.missing_price_cards.length} ohne Preis`} color="warning" variant="outlined" />
-              </Stack>
-            </Box>
-          </Grid>
-        </Grid>
-      </Paper>
+      <PageHeader title="Dashboard" description="Überblick über Bestand, Wertentwicklung und offene Prüfungen." />
 
       <Grid container spacing={2.5}>
         <Grid item xs={12} sm={6} xl={3}>
@@ -285,7 +242,7 @@ export default function Home() {
           <StatCard
             label="Preisupdates"
             value={stats.recent_price_updates.length.toString()}
-            sublabel="Kuerzlich aktualisierte Karten"
+            sublabel="Kürzlich aktualisierte Karten"
             accent="warning"
           />
         </Grid>
@@ -320,7 +277,7 @@ export default function Home() {
           <DashboardSection title="Top Preissteigerungen" items={stats.top_gainers} variant="gainer" emptyText="Keine Gewinner gefunden." />
         </Grid>
         <Grid item xs={12} md={6} xl={5}>
-          <DashboardSection title="Top Preisrueckgaenge" items={stats.top_losers} variant="loser" emptyText="Keine Verlierer gefunden." />
+          <DashboardSection title="Top Preisrückgänge" items={stats.top_losers} variant="loser" emptyText="Keine Verlierer gefunden." />
         </Grid>
         <Grid item xs={12} md={6} xl={4}>
           <DashboardSection title="Aktuell trendende Karten" items={stats.trending_cards} variant="trend" emptyText="Keine Trendkarten gefunden." />

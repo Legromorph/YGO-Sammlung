@@ -1,5 +1,6 @@
 .env
 .env.local
+.env.dockhand
 .venv/
 __pycache__/
 *.py[cod]
@@ -14,5 +15,6 @@ backend/media/
 frontend/node_modules/
 frontend/.next/
 frontend/tsconfig.tsbuildinfo
+backups/
 postgres_data/
 redis_data/

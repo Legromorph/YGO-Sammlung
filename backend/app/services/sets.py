@@ -9,12 +9,15 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.domain.card_metadata import apply_card_metadata, normalize_card_metadata
 from app.config import settings
 from app.integrations.card_data import get_card_data_provider
+from app.integrations.price_values import parse_positive_price
 from app.models import Card, CardPrint, CardSet, ImageAsset, InventoryItem, SourceMapping
 from app.schemas import CardSetSummary, SetCardRow, SetCardsResponse
 from app.services.app_settings import get_app_settings
 from app.services.currency import convert_amount
+from app.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -39,15 +42,6 @@ def _normalize_lookup_value(value: str | None) -> str:
     if not value:
         return ""
     return re.sub(r"[^a-z0-9]", "", value.lower())
-
-
-def _parse_float(value: str | float | int | None) -> float | None:
-    try:
-        if value in (None, ""):
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _parse_int(value: object) -> int | None:
@@ -272,7 +266,7 @@ def _build_completeness_warning(card_set: CardSet) -> tuple[bool, str | None]:
             False,
             card_set.sync_warning
             or (
-                f"Set moeglicherweise unvollstaendig: lokal {loaded_card_count} von erwarteten "
+                f"Set möglicherweise unvollständig: lokal {loaded_card_count} von erwarteten "
                 f"{expected_card_count} Karten und {loaded_print_count} Prints."
             ),
         )
@@ -419,7 +413,7 @@ async def _ensure_requested_language_prints(db: AsyncSession, card_set: CardSet,
             target_mapping.external_id = source_mapping.external_id
             target_mapping.external_url = source_mapping.external_url
             target_mapping.payload = payload or None
-            target_mapping.last_synced_at = source_mapping.last_synced_at or datetime.utcnow()
+            target_mapping.last_synced_at = source_mapping.last_synced_at or utc_now()
 
         derived_any = derived_any or is_new_target
 
@@ -476,7 +470,7 @@ async def _load_exact_remote_set_cards(
     card_set: CardSet,
     expected_card_count: int,
 ) -> tuple[list[dict], str, int, int]:
-    direct_remote_cards = await provider.fetch_cards_for_set(card_set.name)
+    direct_remote_cards = await provider.fetch_cards_for_set(card_set.name, tcgplayer_data=True)
     direct_exact_cards = _dedupe_remote_cards(
         [remote_card for remote_card in direct_remote_cards if _select_matching_remote_prints(remote_card, card_set)]
     )
@@ -539,7 +533,7 @@ async def _ensure_card_mapping(db: AsyncSession, card: Card, provider_key: str, 
     mapping.external_id = remote_card["external_id"]
     mapping.external_url = f"https://db.ygoprodeck.com/card/?search={remote_card['external_id']}"
     mapping.payload = {"name": remote_card["name"]}
-    mapping.last_synced_at = datetime.utcnow()
+    mapping.last_synced_at = utc_now()
 
 
 async def _ensure_print_mapping(db: AsyncSession, card_print: CardPrint, provider_key: str, remote_card: dict, remote_print: dict) -> None:
@@ -563,7 +557,7 @@ async def _ensure_print_mapping(db: AsyncSession, card_print: CardPrint, provide
         "set_rarity_code": remote_print.get("set_rarity_code"),
         "set_price": remote_print.get("set_price"),
     }
-    mapping.last_synced_at = datetime.utcnow()
+    mapping.last_synced_at = utc_now()
 
 
 def _serialize_card_set(card_set: CardSet) -> CardSetSummary:
@@ -589,7 +583,7 @@ def _serialize_card_set(card_set: CardSet) -> CardSetSummary:
 
 async def sync_card_sets_catalog(db: AsyncSession, *, force: bool = False) -> None:
     latest_sync = await db.scalar(select(func.max(CardSet.catalog_synced_at)).where(CardSet.provider_key == "ygoprodeck"))
-    if latest_sync and not force and latest_sync >= datetime.utcnow() - timedelta(hours=24):
+    if latest_sync and not force and latest_sync >= utc_now() - timedelta(hours=24):
         return
 
     provider = get_card_data_provider()
@@ -607,7 +601,7 @@ async def sync_card_sets_catalog(db: AsyncSession, *, force: bool = False) -> No
     existing_by_name: dict[str, list[CardSet]] = {}
     for card_set in existing_sets:
         existing_by_name.setdefault(card_set.normalized_name, []).append(card_set)
-    synced_at = datetime.utcnow()
+    synced_at = utc_now()
 
     for remote_set in remote_sets:
         normalized_name = normalize_name(remote_set["name"])
@@ -657,25 +651,30 @@ async def _upsert_card_set_card(db: AsyncSession, card_set: CardSet, remote_card
 
     card.name = remote_card["name"]
     card.normalized_name = normalize_name(remote_card["name"])
-    card.card_type = remote_card.get("card_type")
-    card.subtype = remote_card.get("subtype")
-    card.frame_type = remote_card.get("frame_type")
     card.description = remote_card.get("description")
-    card.attribute = remote_card.get("attribute")
-    card.monster_type = remote_card.get("monster_type")
-    card.archetype = remote_card.get("archetype")
-    card.atk = remote_card.get("atk")
-    card.defense = remote_card.get("defense")
-    card.level = remote_card.get("level")
-    card.rank = remote_card.get("rank")
-    card.link_rating = remote_card.get("link_rating")
-    card.link_arrows = remote_card.get("link_arrows")
-    card.pendulum_scale = remote_card.get("pendulum_scale")
-    card.pendulum_effect = remote_card.get("pendulum_effect")
-    card.spell_trap_type = remote_card.get("spell_trap_type")
+    apply_card_metadata(
+        card,
+        normalize_card_metadata(
+            card_type=remote_card.get("card_type"),
+            subtype=remote_card.get("subtype"),
+            frame_type=remote_card.get("frame_type"),
+            attribute=remote_card.get("attribute"),
+            monster_type=remote_card.get("monster_type"),
+            archetype=remote_card.get("archetype"),
+            atk=remote_card.get("atk"),
+            defense=remote_card.get("defense"),
+            level=remote_card.get("level"),
+            rank=remote_card.get("rank"),
+            link_rating=remote_card.get("link_rating"),
+            link_arrows=remote_card.get("link_arrows"),
+            pendulum_scale=remote_card.get("pendulum_scale"),
+            pendulum_effect=remote_card.get("pendulum_effect"),
+            spell_trap_type=remote_card.get("spell_trap_type"),
+        ),
+    )
     card.limitations = remote_card.get("limitations")
     card.source_payload = remote_card.get("payload")
-    card.last_synced_at = datetime.utcnow()
+    card.last_synced_at = utc_now()
 
     await _ensure_card_mapping(db, card, provider_key, remote_card)
     await db.flush()
@@ -721,7 +720,7 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
     card_set.loaded_print_count = local_loaded_print_count
 
     is_complete, warning = _build_completeness_warning(card_set)
-    is_stale = not card_set.cards_synced_at or card_set.cards_synced_at < datetime.utcnow() - timedelta(days=7)
+    is_stale = not card_set.cards_synced_at or card_set.cards_synced_at < utc_now() - timedelta(days=7)
     needs_sync = force or not local_loaded_print_count or not is_complete or is_stale
 
     if not needs_sync:
@@ -744,7 +743,7 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
         local_loaded_card_count, local_loaded_print_count = await _local_set_counts(db, card_set)
         card_set.loaded_card_count = local_loaded_card_count
         card_set.loaded_print_count = local_loaded_print_count
-        card_set.sync_warning = f"Provider lieferte fuer {card_set.name} keine Karten."
+        card_set.sync_warning = f"Provider lieferte für {card_set.name} keine Karten."
         logger.warning("Set sync returned no cards for %s (%s).", card_set.name, card_set.set_code)
         await db.flush()
         return
@@ -766,13 +765,13 @@ async def sync_card_set_cards(db: AsyncSession, card_set: CardSet, *, language: 
     local_loaded_card_count, local_loaded_print_count = await _local_set_counts(db, card_set)
     card_set.loaded_card_count = local_loaded_card_count
     card_set.loaded_print_count = local_loaded_print_count
-    card_set.cards_synced_at = datetime.utcnow()
+    card_set.cards_synced_at = utc_now()
     card_set.last_synced_at = card_set.cards_synced_at
 
     is_complete = not expected_card_count or local_loaded_card_count >= expected_card_count
     if not is_complete:
         card_set.sync_warning = (
-            f"Set moeglicherweise unvollstaendig: lokal {local_loaded_card_count} von erwarteten "
+            f"Set möglicherweise unvollständig: lokal {local_loaded_card_count} von erwarteten "
             f"{expected_card_count} Karten nach dem Sync. Quelle={sync_strategy}, direkter Treffer={direct_exact_count}, Seiten im Vollscan={pages_scanned}."
         )
         logger.warning(
@@ -818,7 +817,7 @@ async def get_card_set_cards(db: AsyncSession, set_id: int, *, language: str = "
     prints = [card_print for card_print in raw_prints if _local_card_print_matches_set(card_print, card_set)]
     filtered_out_print_count = len(raw_prints) - len(prints)
     if filtered_out_print_count > 0:
-        warning = f"{filtered_out_print_count} lokal verknuepfte Prints wurden wegen unpassender Set-Zuordnung ausgeblendet."
+        warning = f"{filtered_out_print_count} lokal verknüpfte Prints wurden wegen unpassender Set-Zuordnung ausgeblendet."
         card_set.sync_warning = _merge_warning(card_set.sync_warning, warning)
         logger.warning(
             "Filtered %s locally linked print(s) from set %s (%s) because they do not match the canonical set signature.",
@@ -830,12 +829,10 @@ async def get_card_set_cards(db: AsyncSession, set_id: int, *, language: str = "
 
     inventory_totals: dict[int, dict[str, object]] = {}
     if print_ids:
-        inventory_totals_result = await db.execute(
+        inventory_quantity_result = await db.execute(
             select(
                 InventoryItem.card_print_id,
                 func.coalesce(func.sum(InventoryItem.quantity), 0),
-                func.max(InventoryItem.current_market_price),
-                func.max(InventoryItem.current_price_currency),
             )
             .where(InventoryItem.card_print_id.in_(print_ids))
             .group_by(InventoryItem.card_print_id)
@@ -843,11 +840,38 @@ async def get_card_set_cards(db: AsyncSession, set_id: int, *, language: str = "
         inventory_totals = {
             row[0]: {
                 "quantity": int(row[1] or 0),
-                "price": float(row[2]) if row[2] is not None else None,
-                "currency": row[3],
+                "price": None,
+                "currency": None,
             }
-            for row in inventory_totals_result.all()
+            for row in inventory_quantity_result.all()
         }
+        inventory_prices_result = await db.execute(
+            select(
+                InventoryItem.card_print_id,
+                InventoryItem.current_market_price,
+                InventoryItem.current_price_currency,
+            )
+            .where(
+                InventoryItem.card_print_id.in_(print_ids),
+                InventoryItem.current_market_price > 0,
+            )
+            .order_by(
+                InventoryItem.card_print_id.asc(),
+                InventoryItem.last_priced_at.desc().nullslast(),
+                InventoryItem.updated_at.desc(),
+            )
+        )
+        for card_print_id, price, currency in inventory_prices_result.all():
+            bucket = inventory_totals.setdefault(
+                card_print_id,
+                {"quantity": 0, "price": None, "currency": None},
+            )
+            if bucket["price"] is not None:
+                continue
+            positive_price = parse_positive_price(price)
+            if positive_price is not None:
+                bucket["price"] = positive_price
+                bucket["currency"] = currency
 
     mapping_result = await db.execute(
         select(SourceMapping).where(
@@ -872,7 +896,7 @@ async def get_card_set_cards(db: AsyncSession, set_id: int, *, language: str = "
 
         inventory_totals_row = inventory_totals.get(card_print.id, {})
         mapping = mappings.get(card_print.id)
-        mapping_price = _parse_float((mapping.payload or {}).get("set_price")) if mapping and mapping.payload else None
+        mapping_price = parse_positive_price((mapping.payload or {}).get("set_price")) if mapping and mapping.payload else None
         mapping_currency = "USD" if mapping_price is not None else None
         converted_inventory_price = None
         if inventory_totals_row.get("price") is not None:
@@ -902,6 +926,7 @@ async def get_card_set_cards(db: AsyncSession, set_id: int, *, language: str = "
                 set_code=card_print.set_code,
                 rarity=card_print.rarity,
                 card_type=card_print.card.card_type,
+                card_kind=card_print.card.card_kind,
                 image_url=image_url,
                 existing_quantity=int(inventory_totals_row.get("quantity", 0)),
                 current_market_price=converted_inventory_price if converted_inventory_price is not None else converted_mapping_price,

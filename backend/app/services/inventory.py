@@ -7,10 +7,12 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.integrations.price_values import parse_positive_price
 from app.models import CardPrint, CardSet, InventoryItem, PriceHistory, PurchaseBatch, PurchaseBatchItem, SourceMapping, StorageLocation
 from app.schemas import BulkSetImportPayload, BulkSetImportResponse
 from app.services.sets import sync_card_set_cards, sync_card_sets_catalog
 from app.services.price_monitor import ensure_initial_price_monitor_state
+from app.time_utils import utc_now
 
 FOUR_DP = Decimal("0.0001")
 TWO_DP = Decimal("0.01")
@@ -98,8 +100,8 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
     loaded_card_count = int(card_set.loaded_card_count or 0)
     if expected_card_count > 0 and loaded_card_count < expected_card_count:
         raise ValueError(
-            f"Das Set '{card_set.name}' ist noch unvollstaendig geladen ({loaded_card_count}/{expected_card_count} Karten). "
-            f"{card_set.sync_warning or 'Bitte Set-Sync pruefen und danach erneut importieren.'}"
+            f"Das Set '{card_set.name}' ist noch unvollständig geladen ({loaded_card_count}/{expected_card_count} Karten). "
+            f"{card_set.sync_warning or 'Bitte Set-Sync prüfen und danach erneut importieren.'}"
         )
 
     selected_quantities: dict[int, int] = {}
@@ -109,7 +111,7 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
         selected_quantities[item.card_print_id] = selected_quantities.get(item.card_print_id, 0) + item.quantity
 
     if not selected_quantities:
-        raise ValueError("Bitte mindestens eine Karte mit Menge > 0 auswaehlen.")
+        raise ValueError("Bitte mindestens eine Karte mit Menge > 0 auswählen.")
 
     selected_print_ids = list(selected_quantities.keys())
     print_result = await db.execute(
@@ -123,13 +125,13 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
 
     missing_ids = sorted(set(selected_print_ids) - set(prints_by_id))
     if missing_ids:
-        raise ValueError("Mindestens eine ausgewaehlte Karte gehoert nicht zum Set.")
+        raise ValueError("Mindestens eine ausgewählte Karte gehört nicht zum Set.")
 
     language_mismatches = sorted(card_print.id for card_print in card_prints if (card_print.language or "").lower() != requested_language)
     if language_mismatches:
         raise ValueError(
-            f"Die ausgewaehlte Sprache '{requested_language.upper()}' passt nicht zu mindestens einem Print. "
-            "Bitte Kartenliste in derselben Sprache laden und erneut auswaehlen."
+            f"Die ausgewählte Sprache '{requested_language.upper()}' passt nicht zu mindestens einem Print. "
+            "Bitte Kartenliste in derselben Sprache laden und erneut auswählen."
         )
 
     mapping_result = await db.execute(
@@ -153,7 +155,7 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
         )
         .where(
             InventoryItem.card_print_id.in_(selected_print_ids),
-            InventoryItem.current_market_price.is_not(None),
+            InventoryItem.current_market_price > 0,
         )
         .order_by(
             InventoryItem.card_print_id.asc(),
@@ -165,9 +167,14 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
     for card_print_id, price, currency, last_price_source in price_snapshot_result.all():
         if card_print_id in price_snapshot_by_print:
             continue
-        if price is None:
+        positive_price = parse_positive_price(price)
+        if positive_price is None:
             continue
-        price_snapshot_by_print[card_print_id] = (float(price), currency or payload.currency, last_price_source or "inventory:existing")
+        price_snapshot_by_print[card_print_id] = (
+            positive_price,
+            currency or payload.currency,
+            last_price_source or "inventory:existing",
+        )
 
     ordered_lines = [(card_print_id, selected_quantities[card_print_id]) for card_print_id in selected_print_ids]
     display_total_price = _to_decimal_amount(payload.display_total_price)
@@ -176,7 +183,7 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
     total_allocated_price = sum((line.line_total for line in allocations), Decimal("0.00"))
     allocation_difference = (display_total_price - total_allocated_price).quantize(TWO_DP, rounding=ROUND_HALF_UP)
     normalized_notes = _normalize_note(payload.notes)
-    now = datetime.utcnow()
+    now = utc_now()
 
     purchase_batch = PurchaseBatch(
         source_type="set_import",
@@ -217,9 +224,9 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
         if market_price is None:
             ygoprodeck_mapping = mapping_bundle.get("ygoprodeck")
             if ygoprodeck_mapping and ygoprodeck_mapping.payload:
-                set_price = ygoprodeck_mapping.payload.get("set_price")
-                if set_price not in (None, ""):
-                    market_price = float(set_price)
+                set_price = parse_positive_price(ygoprodeck_mapping.payload.get("set_price"))
+                if set_price is not None:
+                    market_price = set_price
                     market_currency = "USD"
                     market_source = "ygoprodeck:set_price"
 
