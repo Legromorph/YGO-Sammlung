@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import traceback
+import asyncio
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable
 
@@ -11,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import session_scope
+from app.integrations.card_data import get_card_data_provider
+from app.integrations.images import get_active_image_provider
 from app.integrations.prices import get_active_price_provider, get_price_providers
 from app.integrations.ygo_omega import get_ygo_omega_probe
 from app.models import InventoryItem, SourceMapping, SyncJob
@@ -484,13 +487,77 @@ async def retry_sync_job(job_id: int) -> SyncJob:
             raise ValueError("Retried job could not be reloaded.")
         return retried_job
 
+async def _safe_provider_status(
+    *,
+    key: str,
+    label: str,
+    category: str,
+    configured: bool,
+    active: bool,
+    healthcheck: Callable[[], Awaitable[dict]],
+) -> ProviderStatus:
+    try:
+        timeout = max(2, settings.request_timeout_seconds + 5)
+        return ProviderStatus(**await asyncio.wait_for(healthcheck(), timeout=timeout))
+    except Exception as exc:
+        logger.exception("Provider healthcheck failed for %s.", key)
+        return ProviderStatus(
+            key=key,
+            label=label,
+            category=category,
+            configured=configured,
+            available=False,
+            active=active,
+            notes=f"Statusprüfung fehlgeschlagen: {exc}",
+        )
+
+
 async def get_provider_statuses() -> list[ProviderStatus]:
     statuses = []
     for provider in get_price_providers():
-        statuses.append(ProviderStatus(**await provider.healthcheck()))
-    statuses.append(ProviderStatus(**await get_card_data_provider().healthcheck()))
-    statuses.append(ProviderStatus(**await get_active_image_provider().healthcheck()))
-    statuses.append(ProviderStatus(**await get_ygo_omega_probe().healthcheck()))
+        statuses.append(
+            await _safe_provider_status(
+                key=provider.provider_key,
+                label="Printpreise via YGOPRODeck" if provider.provider_key == "ygoprodeck" else "Cardmarket (manuell)",
+                category="price",
+                configured=True,
+                active=settings.price_provider == provider.provider_key,
+                healthcheck=provider.healthcheck,
+            )
+        )
+    card_data_provider = get_card_data_provider()
+    statuses.append(
+        await _safe_provider_status(
+            key=card_data_provider.provider_key,
+            label="YGOPRODeck",
+            category="card-data",
+            configured=True,
+            active=settings.card_data_provider == card_data_provider.provider_key,
+            healthcheck=card_data_provider.healthcheck,
+        )
+    )
+    image_provider = get_active_image_provider()
+    statuses.append(
+        await _safe_provider_status(
+            key=image_provider.provider_key,
+            label="YGOPRODeck Images",
+            category="image",
+            configured=True,
+            active=settings.image_provider == image_provider.provider_key,
+            healthcheck=image_provider.healthcheck,
+        )
+    )
+    ygo_omega_probe = get_ygo_omega_probe()
+    statuses.append(
+        await _safe_provider_status(
+            key=ygo_omega_probe.provider_key,
+            label="YGO Omega",
+            category="card-data",
+            configured=bool(settings.ygo_omega_directory),
+            active=False,
+            healthcheck=ygo_omega_probe.healthcheck,
+        )
+    )
     return statuses
 
 async def fail_stale_running_jobs() -> int:
