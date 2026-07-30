@@ -4,9 +4,9 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.background import BackgroundTask
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from app.database import get_db
 from app.services.backups import create_backup_archive, restore_backup_archive
