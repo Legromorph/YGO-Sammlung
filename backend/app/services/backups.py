@@ -56,8 +56,10 @@ RESTORE_MODELS = (
     ImageAsset,
     SourceMapping,
     PriceMonitorState,
-    SyncJob,
 )
+
+RUNTIME_ONLY_MODELS = (SyncJob,)
+CLEAR_MODELS = (*RESTORE_MODELS, *RUNTIME_ONLY_MODELS)
 
 
 def _parse_datetime(value: str) -> datetime:
@@ -165,7 +167,7 @@ def _restore_media(archive_path: Path) -> None:
 
 
 async def _reset_sequences(db: AsyncSession) -> None:
-    for model in RESTORE_MODELS:
+    for model in CLEAR_MODELS:
         table_name = model.__tablename__
         await db.execute(
             text(
@@ -185,7 +187,7 @@ async def restore_backup_archive(db: AsyncSession, archive_path: Path) -> dict[s
     payload = _read_backup_payload(archive_path)
     tables = payload["tables"]
 
-    for model in reversed(RESTORE_MODELS):
+    for model in reversed(CLEAR_MODELS):
         await db.execute(delete(model))
     await db.flush()
 

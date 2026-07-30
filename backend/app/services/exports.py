@@ -28,7 +28,6 @@ from app.models import (
     PriceMonitorState,
     SourceMapping,
     StorageLocation,
-    SyncJob,
 )
 from app.time_utils import utc_now
 
@@ -50,7 +49,6 @@ EXPORT_MODELS = (
     ImageAsset,
     SourceMapping,
     PriceMonitorState,
-    SyncJob,
 )
 
 
