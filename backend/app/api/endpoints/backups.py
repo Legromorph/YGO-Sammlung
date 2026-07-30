@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from app.services.backups import create_backup_archive, restore_backup_archive
 from app.time_utils import utc_now
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/download")
@@ -51,7 +53,11 @@ async def restore_backup(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         except Exception as exc:
             await db.rollback()
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Backup konnte nicht eingespielt werden.") from exc
+            logger.exception("Backup restore failed.")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Backup konnte nicht eingespielt werden: {exc}",
+            ) from exc
     finally:
         temporary.close()
         temporary_path.unlink(missing_ok=True)

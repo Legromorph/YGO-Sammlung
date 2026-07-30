@@ -151,9 +151,12 @@ def _restore_media(archive_path: Path) -> None:
                 with archive.open(member) as source, target_path.open("wb") as target:
                     shutil.copyfileobj(source, target)
 
-        if media_root.exists():
-            shutil.rmtree(media_root)
         media_root.mkdir(parents=True, exist_ok=True)
+        for existing_item in media_root.iterdir():
+            if existing_item.is_dir() and not existing_item.is_symlink():
+                shutil.rmtree(existing_item)
+            else:
+                existing_item.unlink()
         for item in temporary_media.iterdir():
             shutil.move(str(item), str(media_root / item.name))
         settings.cards_media_path.mkdir(parents=True, exist_ok=True)
