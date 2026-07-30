@@ -38,6 +38,45 @@ function statusColor(status: string): 'success' | 'error' | 'warning' | 'info' |
   return 'warning';
 }
 
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall back below for non-secure LAN origins such as http://10.x.x.x.
+    }
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '0';
+  textarea.style.left = '-9999px';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+
+  const selection = document.getSelection();
+  const previousRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+
+  textarea.focus();
+  textarea.select();
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+
+  if (selection) {
+    selection.removeAllRanges();
+    if (previousRange) {
+      selection.addRange(previousRange);
+    }
+  }
+
+  if (!copied) {
+    throw new Error('Clipboard copy failed.');
+  }
+}
+
 export default function SyncJobLogDialog({ open, job, onClose }: SyncJobLogDialogProps) {
   const [jobDetail, setJobDetail] = useState<SyncJob | null>(job);
   const [loading, setLoading] = useState(false);
@@ -127,7 +166,7 @@ export default function SyncJobLogDialog({ open, job, onClose }: SyncJobLogDialo
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(logText);
+      await copyText(logText);
       setCopyState('copied');
     } catch {
       setCopyState('failed');
@@ -165,10 +204,18 @@ export default function SyncJobLogDialog({ open, job, onClose }: SyncJobLogDialo
       <DialogContent dividers sx={{ px: { xs: 2, sm: 3 } }}>
         <Stack spacing={2}>
           {error ? <Alert severity="error">{error}</Alert> : null}
+          {copyState === 'failed' ? (
+            <Alert severity="warning">
+              Der Browser hat das automatische Kopieren blockiert. Der Logtext kann im Feld markiert und manuell kopiert werden.
+            </Alert>
+          ) : null}
           {jobDetail?.error_message ? <Alert severity="error">{jobDetail.error_message}</Alert> : null}
-          <Box sx={{ display: 'grid', gap: 1, gridTemplateColumns: { xs: '1fr', md: 'repeat(4, minmax(0, 1fr))' } }}>
+          <Box sx={{ display: 'grid', gap: 1, gridTemplateColumns: { xs: '1fr', md: 'repeat(5, minmax(0, 1fr))' } }}>
             <Typography variant="body2" color="text.secondary">
               Erstellt: {formatDate(jobDetail?.created_at || job?.created_at || null)}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Geplant ab: {formatDate(jobDetail?.available_at || job?.available_at || null)}
             </Typography>
             <Typography variant="body2" color="text.secondary">
               Gestartet: {formatDate(jobDetail?.started_at || job?.started_at || null)}

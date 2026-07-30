@@ -352,10 +352,11 @@ async def create_sync_job_record(
     )
     db.add(job)
     await db.flush()
+    scheduled_for_future = bool(available_at and available_at > utc_now())
     _apply_job_log_update(
         job,
         level="INFO",
-        message="Job queued and waiting for worker claim.",
+        message="Job scheduled for later worker claim." if scheduled_for_future else "Job queued and waiting for worker claim.",
         context={
             "job_type": job_type,
             "provider_key": provider_key,
@@ -364,7 +365,7 @@ async def create_sync_job_record(
             "available_at": available_at.isoformat() if available_at else None,
             "payload": payload,
         },
-        excerpt="Pending worker claim.",
+        excerpt=f"Scheduled for {available_at.isoformat()}." if scheduled_for_future and available_at else "Pending worker claim.",
         reset=True,
     )
     logger.info("Created %s job %s with lock %s", job_type, job.id, lock_key)

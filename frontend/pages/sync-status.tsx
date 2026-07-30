@@ -55,7 +55,38 @@ function progressValue(job: SyncJob): number | null {
 }
 
 function hasActiveProgress(job: SyncJob): boolean {
-  return job.status === 'running' || job.status === 'pending';
+  return job.status === 'running' || (job.status === 'pending' && !isScheduledPendingJob(job));
+}
+
+function availableAtTime(job: SyncJob): number | null {
+  if (!job.available_at) {
+    return null;
+  }
+  const timestamp = Date.parse(job.available_at);
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+function isScheduledPendingJob(job: SyncJob, now = Date.now()): boolean {
+  const availableAt = availableAtTime(job);
+  return job.status === 'pending' && availableAt !== null && availableAt > now;
+}
+
+function jobStatusLabel(job: SyncJob): string {
+  return isScheduledPendingJob(job) ? 'geplant' : job.status;
+}
+
+function jobStatusColor(job: SyncJob): 'success' | 'error' | 'warning' | 'info' | 'default' {
+  return isScheduledPendingJob(job) ? 'info' : statusColor(job.status);
+}
+
+function jobHint(job: SyncJob): string {
+  if (job.error_message || job.stuck_reason) {
+    return job.error_message || job.stuck_reason || 'n/a';
+  }
+  if (isScheduledPendingJob(job) && job.available_at) {
+    return `Wartet geplant bis ${formatDate(job.available_at)}`;
+  }
+  return job.log_excerpt || 'n/a';
 }
 
 export default function SyncStatusPage() {
@@ -242,80 +273,87 @@ export default function SyncStatusPage() {
               <TableCell>Provider</TableCell>
               <TableCell>Fortschritt</TableCell>
               <TableCell>Erstellt</TableCell>
-              <TableCell>Abschluss</TableCell>
+              <TableCell>Zeitpunkt</TableCell>
               <TableCell>Hinweis</TableCell>
               <TableCell align="right">Aktion</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {filteredJobs.map((job: SyncJob) => (
-              <TableRow key={job.id}>
-                <TableCell>
-                  <Stack spacing={0.5}>
-                    <Typography fontWeight={700}>#{job.id} {job.job_type}</Typography>
-                    {job.payload?.['trigger'] ? (
-                      <Typography variant="body2" color="text.secondary">
-                        Trigger: {String(job.payload['trigger'])}
-                      </Typography>
-                    ) : null}
-                  </Stack>
-                </TableCell>
-                <TableCell>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                    <Chip label={job.status} size="small" color={statusColor(job.status)} variant="outlined" />
-                    {job.is_stuck ? <Chip label="auffällig" size="small" color="warning" variant="outlined" /> : null}
-                  </Stack>
-                </TableCell>
-                <TableCell>{job.provider_key || 'internal'}</TableCell>
-                <TableCell sx={{ minWidth: 220 }}>
-                  {progressValue(job) !== null ? (
-                    <Stack spacing={0.6}>
-                      <LinearProgress variant="determinate" value={progressValue(job) || 0} />
-                      <Typography variant="body2" color="text.secondary">
-                        {(job.processed_items || 0)} / {job.total_items || 0}
-                        {job.rate_limit_per_minute ? ` | ${job.rate_limit_per_minute}/min` : ''}
-                      </Typography>
+            {filteredJobs.map((job: SyncJob) => {
+              const scheduledPending = isScheduledPendingJob(job);
+              return (
+                <TableRow key={job.id}>
+                  <TableCell>
+                    <Stack spacing={0.5}>
+                      <Typography fontWeight={700}>#{job.id} {job.job_type}</Typography>
+                      {job.payload?.['trigger'] ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Trigger: {String(job.payload['trigger'])}
+                        </Typography>
+                      ) : null}
                     </Stack>
-                  ) : hasActiveProgress(job) ? (
-                    <Stack spacing={0.6}>
-                      <LinearProgress />
-                      <Typography variant="body2" color="text.secondary">
-                        Wird vorbereitet...
-                      </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <Chip label={jobStatusLabel(job)} size="small" color={jobStatusColor(job)} variant="outlined" />
+                      {job.is_stuck ? <Chip label="auffällig" size="small" color="warning" variant="outlined" /> : null}
                     </Stack>
-                  ) : (
-                    <Typography variant="body2" color="text.secondary">
-                      n/a
+                  </TableCell>
+                  <TableCell>{job.provider_key || 'internal'}</TableCell>
+                  <TableCell sx={{ minWidth: 220 }}>
+                    {progressValue(job) !== null ? (
+                      <Stack spacing={0.6}>
+                        <LinearProgress variant="determinate" value={progressValue(job) || 0} />
+                        <Typography variant="body2" color="text.secondary">
+                          {(job.processed_items || 0)} / {job.total_items || 0}
+                          {job.rate_limit_per_minute ? ` | ${job.rate_limit_per_minute}/min` : ''}
+                        </Typography>
+                      </Stack>
+                    ) : scheduledPending ? (
+                      <Typography variant="body2" color="text.secondary">
+                        Geplant ab {formatDate(job.available_at)}
+                      </Typography>
+                    ) : hasActiveProgress(job) ? (
+                      <Stack spacing={0.6}>
+                        <LinearProgress />
+                        <Typography variant="body2" color="text.secondary">
+                          Wird vorbereitet...
+                        </Typography>
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        n/a
+                      </Typography>
+                    )}
+                  </TableCell>
+                  <TableCell>{formatDate(job.created_at)}</TableCell>
+                  <TableCell>{scheduledPending ? formatDate(job.available_at) : formatDate(job.completed_at || job.started_at || null)}</TableCell>
+                  <TableCell sx={{ maxWidth: 420 }}>
+                    <Typography variant="body2" sx={{ whiteSpace: 'normal' }}>
+                      {jobHint(job)}
                     </Typography>
-                  )}
-                </TableCell>
-                <TableCell>{formatDate(job.created_at)}</TableCell>
-                <TableCell>{formatDate(job.completed_at || job.started_at || null)}</TableCell>
-                <TableCell sx={{ maxWidth: 420 }}>
-                  <Typography variant="body2" sx={{ whiteSpace: 'normal' }}>
-                    {job.error_message || job.stuck_reason || job.log_excerpt || 'n/a'}
-                  </Typography>
-                </TableCell>
-                <TableCell align="right">
-                  <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
-                    <Button size="small" color="inherit" onClick={() => setLogJob(job)}>
-                      Mehr anzeigen
-                    </Button>
-                    {job.can_retry ? (
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        startIcon={retryingJobId === job.id ? <CircularProgress size={14} color="inherit" /> : <ReplayRoundedIcon />}
-                        disabled={retryingJobId === job.id}
-                        onClick={() => void retry(job.id)}
-                      >
-                        Retry
+                  </TableCell>
+                  <TableCell align="right">
+                    <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                      <Button size="small" color="inherit" onClick={() => setLogJob(job)}>
+                        Mehr anzeigen
                       </Button>
-                    ) : null}
-                  </Stack>
-                </TableCell>
-              </TableRow>
-            ))}
+                      {job.can_retry ? (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={retryingJobId === job.id ? <CircularProgress size={14} color="inherit" /> : <ReplayRoundedIcon />}
+                          disabled={retryingJobId === job.id}
+                          onClick={() => void retry(job.id)}
+                        >
+                          Retry
+                        </Button>
+                      ) : null}
+                    </Stack>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </Paper>
