@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.endpoints import assets, cards, collections, dashboard, decks, exports, health, inventory, sets, settings, storage_locations, sync
+from app.api.endpoints import assets, backups, cards, collections, dashboard, decks, exports, health, inventory, sets, settings, storage_locations, sync
 
 api_router = APIRouter()
 api_router.include_router(health.router, prefix="/health", tags=["health"])
@@ -15,3 +15,4 @@ api_router.include_router(collections.router, prefix="/collections", tags=["coll
 api_router.include_router(sync.router, prefix="/sync", tags=["sync"])
 api_router.include_router(assets.router, prefix="/assets", tags=["assets"])
 api_router.include_router(exports.router, prefix="/exports", tags=["exports"])
+api_router.include_router(backups.router, prefix="/backups", tags=["backups"])

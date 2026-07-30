@@ -1,10 +1,16 @@
-import { useEffect, useState } from 'react';
+import { ChangeEvent, useEffect, useRef, useState } from 'react';
+import CloudUploadRoundedIcon from '@mui/icons-material/CloudUploadRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import SaveRoundedIcon from '@mui/icons-material/SaveRounded';
 import {
   Alert,
   Box,
   Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   MenuItem,
   Paper,
   Stack,
@@ -43,9 +49,13 @@ export default function SettingsPage() {
   const { settings, loading, error, refreshSettings } = useAppSettings();
   const [form, setForm] = useState<AppSettings>(settings);
   const [saving, setSaving] = useState(false);
-  const [downloading, setDownloading] = useState<'csv' | 'json' | null>(null);
+  const [downloading, setDownloading] = useState<'csv' | 'json' | 'backup' | null>(null);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const restoreInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setForm(settings);
@@ -69,28 +79,79 @@ export default function SettingsPage() {
     }
   };
 
+  const downloadBlob = async (endpoint: string, fallbackFilename: string) => {
+    const response = await api.get<Blob>(endpoint, { responseType: 'blob' });
+    const disposition = response.headers['content-disposition'] || '';
+    const filename =
+      disposition.match(/filename="?([^";]+)"?/i)?.[1] ||
+      fallbackFilename;
+    const objectUrl = URL.createObjectURL(response.data);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
+  };
+
   const handleDownload = async (format: 'csv' | 'json') => {
     setDownloading(format);
     setSaveError(null);
     try {
       const endpoint = format === 'csv' ? '/exports/inventory.csv' : '/exports/collection.json';
-      const response = await api.get<Blob>(endpoint, { responseType: 'blob' });
-      const disposition = response.headers['content-disposition'] || '';
-      const filename =
-        disposition.match(/filename="?([^";]+)"?/i)?.[1] ||
-        `ygo-sammlung.${format}`;
-      const objectUrl = URL.createObjectURL(response.data);
-      const anchor = document.createElement('a');
-      anchor.href = objectUrl;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(objectUrl);
+      await downloadBlob(endpoint, `ygo-sammlung.${format}`);
     } catch (requestError) {
       setSaveError(getApiErrorMessage(requestError));
     } finally {
       setDownloading(null);
+    }
+  };
+
+  const handleBackupDownload = async () => {
+    setDownloading('backup');
+    setSaveError(null);
+    setMessage(null);
+    try {
+      await downloadBlob('/backups/download', 'ygo-sammlung-backup.zip');
+    } catch (requestError) {
+      setSaveError(getApiErrorMessage(requestError));
+    } finally {
+      setDownloading(null);
+    }
+  };
+
+  const handleRestoreFileSelected = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+    setRestoreFile(file);
+    setRestoreConfirmOpen(true);
+    setSaveError(null);
+    setMessage(null);
+  };
+
+  const handleRestore = async () => {
+    if (!restoreFile) {
+      return;
+    }
+    setRestoring(true);
+    setSaveError(null);
+    setMessage(null);
+    try {
+      const formData = new FormData();
+      formData.append('backup', restoreFile);
+      await api.post('/backups/restore', formData);
+      setMessage('Backup eingespielt. Die Seite wird neu geladen...');
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (requestError) {
+      setSaveError(getApiErrorMessage(requestError));
+    } finally {
+      setRestoring(false);
+      setRestoreConfirmOpen(false);
+      setRestoreFile(null);
     }
   };
 
@@ -210,6 +271,72 @@ export default function SettingsPage() {
           </Stack>
         </Stack>
       </Paper>
+
+      <Paper sx={{ p: 3 }}>
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="h6">Backup</Typography>
+            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+              Erstellt ein ZIP-Backup mit Datenbankexport und gespeicherten Kartenbildern.
+            </Typography>
+          </Box>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+            <Button
+              startIcon={<DownloadRoundedIcon />}
+              variant="contained"
+              disabled={downloading !== null || restoring}
+              onClick={() => void handleBackupDownload()}
+            >
+              {downloading === 'backup' ? 'Backup wird erstellt...' : 'Backup herunterladen'}
+            </Button>
+            <Button
+              startIcon={<CloudUploadRoundedIcon />}
+              variant="outlined"
+              color="warning"
+              disabled={downloading !== null || restoring}
+              onClick={() => restoreInputRef.current?.click()}
+            >
+              {restoring ? 'Backup wird eingespielt...' : 'Backup einspielen'}
+            </Button>
+            <input
+              ref={restoreInputRef}
+              type="file"
+              accept=".zip,application/zip"
+              hidden
+              onChange={handleRestoreFileSelected}
+            />
+          </Stack>
+        </Stack>
+      </Paper>
+
+      <Dialog
+        open={restoreConfirmOpen}
+        onClose={() => {
+          if (!restoring) {
+            setRestoreConfirmOpen(false);
+          }
+        }}
+      >
+        <DialogTitle>Backup einspielen?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Das aktuelle Inventar, Decks, Sammlungen, Preisverläufe, Jobs und gespeicherte Bilder werden durch das ausgewählte Backup ersetzt.
+          </DialogContentText>
+          {restoreFile ? (
+            <Typography sx={{ mt: 2 }} variant="body2">
+              Datei: {restoreFile.name}
+            </Typography>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button disabled={restoring} onClick={() => setRestoreConfirmOpen(false)}>
+            Abbrechen
+          </Button>
+          <Button color="warning" variant="contained" disabled={restoring} onClick={() => void handleRestore()}>
+            {restoring ? 'Wird eingespielt...' : 'Einspielen'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

@@ -25,8 +25,10 @@ from app.models import (
     PriceHistory,
     PurchaseBatch,
     PurchaseBatchItem,
+    PriceMonitorState,
     SourceMapping,
     StorageLocation,
+    SyncJob,
 )
 from app.time_utils import utc_now
 
@@ -47,6 +49,8 @@ EXPORT_MODELS = (
     CollectionCard,
     ImageAsset,
     SourceMapping,
+    PriceMonitorState,
+    SyncJob,
 )
 
 
