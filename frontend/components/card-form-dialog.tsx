@@ -32,6 +32,7 @@ import {
   defaultPayload,
   getLanguageAwarePrintOptions,
   isCardmarketUrl,
+  normalizeOptionalPositiveNumber,
   normalizeSetGroupKey,
   parseLanguageList,
   priceMatchQualityForSource,
@@ -492,10 +493,7 @@ export default function CardFormDialog({
         form.purchase_price === null || form.purchase_price === undefined || form.purchase_price === 0
           ? form.purchase_price
           : Number(form.purchase_price),
-      current_market_price:
-        form.current_market_price === null || form.current_market_price === undefined || form.current_market_price === 0
-          ? form.current_market_price
-          : Number(form.current_market_price),
+      current_market_price: normalizeOptionalPositiveNumber(form.current_market_price),
       atk: form.atk === null || form.atk === undefined ? undefined : Number(form.atk),
       defense: form.defense === null || form.defense === undefined ? undefined : Number(form.defense),
       level: form.level === null || form.level === undefined ? undefined : Number(form.level),

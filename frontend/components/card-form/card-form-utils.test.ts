@@ -5,6 +5,7 @@ import {
   buildSetCodeForLanguage,
   buildVariantKey,
   isCardmarketUrl,
+  normalizeOptionalPositiveNumber,
   sanitizeSelection,
   validateSetCodeLanguage,
 } from './card-form-utils';
@@ -44,5 +45,13 @@ describe('card form helpers', () => {
 
   it('führt Suchsprachen ohne Dopplungen zusammen', () => {
     expect(buildSearchLanguageQuery('de,en,fr', 'de')).toBe('de,en,fr');
+  });
+
+  it('normalisiert leere oder nullige Marktpreise für die API', () => {
+    expect(normalizeOptionalPositiveNumber(undefined)).toBeUndefined();
+    expect(normalizeOptionalPositiveNumber(null)).toBeUndefined();
+    expect(normalizeOptionalPositiveNumber(0)).toBeUndefined();
+    expect(normalizeOptionalPositiveNumber('')).toBeUndefined();
+    expect(normalizeOptionalPositiveNumber('1.25')).toBe(1.25);
   });
 });

@@ -279,6 +279,15 @@ export function buildDefaultPayload(preferredCardLanguage: string, preferredCurr
   };
 }
 
+export function normalizeOptionalPositiveNumber(value: number | string | null | undefined): number | undefined {
+  if (value === null || value === undefined || value === '') {
+    return undefined;
+  }
+
+  const nextValue = Number(value);
+  return Number.isFinite(nextValue) && nextValue > 0 ? nextValue : undefined;
+}
+
 export function isCardmarketUrl(value: string): boolean {
   return /^https?:\/\/www\.cardmarket\.com\/[a-z]{2}\/YuGiOh\//i.test(value.trim());
 }
