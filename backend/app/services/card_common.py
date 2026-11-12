@@ -404,26 +404,20 @@ def _is_verified_cardmarket_quality(value: str | None) -> bool:
 def _is_safe_cardmarket_quality(value: str | None) -> bool:
     return value in CARDMARKET_SAFE_MATCH_QUALITIES
 
-def _price_note(price_source: str | None, *, multiple_prints: bool, has_cardmarket_reference: bool) -> str:
+def _price_note(price_source: str | None, *, multiple_prints: bool, has_cardmarket_reference: bool = False) -> str:
+    del has_cardmarket_reference
     source_notes = {
-        "ygoprodeck:set_price": "Print-spezifischer YGOPRODeck-Setpreis als Startwert.",
-        "ygoprodeck:tcgplayer_set_price": "Print-spezifischer TCGPlayer-Marktpreis via YGOPRODeck als Startwert.",
-        "ygoprodeck:cardmarket": (
-            "Allgemeiner Cardmarket-Kartenpreis via YGOPRODeck als Fallback; "
-            "dieser Wert ist nicht druckspezifisch."
-        ),
-        "ygoprodeck:tcgplayer": "TCGplayer-Fallback als Startwert.",
-        "ygoprodeck:ebay": "eBay-Fallback als Startwert.",
-        "ygoprodeck:amazon": "Amazon-Fallback als Startwert.",
-        "cardmarket:public-product-page": "Preis-Trend aus der öffentlichen Cardmarket-Produktseite als Startwert.",
+        "ygoprodeck:set_price": "Preis genau für diesen Print (YGOPRODeck).",
+        "ygoprodeck:tcgplayer_set_price": "Preis genau für diesen Print (TCGPlayer via YGOPRODeck).",
+        "ygoprodeck:cardmarket": "Allgemeiner Cardmarket-Kartenpreis, gilt nicht speziell für diesen Print.",
+        "ygoprodeck:tcgplayer": "Allgemeiner TCGPlayer-Kartenpreis, gilt nicht speziell für diesen Print.",
+        "ygoprodeck:ebay": "Allgemeiner eBay-Kartenpreis, gilt nicht speziell für diesen Print.",
+        "ygoprodeck:amazon": "Allgemeiner Amazon-Kartenpreis, gilt nicht speziell für diesen Print.",
     }
-    note_parts = [source_notes.get(price_source, "Es liegt derzeit nur ein allgemeiner Provider-Snapshot vor.")]
+    note = source_notes.get(price_source or "", "Für diesen Print ist noch kein Preis bekannt.")
     if multiple_prints:
-        note_parts.append("Bitte Set, Setcode und Seltenheit auswählen, damit die Druckvariante sauber feststeht.")
-    note_parts.append("Zustandsspezifische Cardmarket-Preise sind im MVP ohne offizielle Cardmarket-API noch nicht automatisiert verfügbar.")
-    if not has_cardmarket_reference:
-        note_parts.append("Eine Cardmarket-Referenz konnte nur aus vorhandenen lokalen Mappings übernommen werden.")
-    return " ".join(note_parts)
+        note = f"{note} Wähle Set und Variante für einen genauen Preis."
+    return note
 
 def _is_exact_inventory_duplicate_candidate(
     item: InventoryItem,

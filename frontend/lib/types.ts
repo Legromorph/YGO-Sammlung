@@ -566,3 +566,10 @@ export interface SyncOverview {
   providers: ProviderStatus[];
   jobs: SyncJob[];
 }
+
+export interface PriceRefreshResponse {
+  status: 'updated' | 'no_price' | 'queued';
+  message: string;
+  card: CardDetail;
+  job?: SyncJob | null;
+}

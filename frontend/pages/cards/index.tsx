@@ -81,6 +81,7 @@ export default function CardsPage() {
   const [pendingCreatePayload, setPendingCreatePayload] = useState<CardPayload | null>(null);
   const [duplicateConflict, setDuplicateConflict] = useState<DuplicateCardConflict | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const loadCards = async () => {
     setLoading(true);
@@ -152,6 +153,7 @@ export default function CardsPage() {
 
   const handleSave = async (payload: CardPayload) => {
     setSaving(true);
+    setSaveError(null);
     try {
       if (editingCard) {
         await api.put(`/cards/${editingCard.id}`, payload);
@@ -169,11 +171,10 @@ export default function CardsPage() {
         if (isDuplicateCardConflict(detail)) {
           setPendingCreatePayload(payload);
           setDuplicateConflict(detail);
-          setError(null);
           return;
         }
       }
-      setError(getApiErrorMessage(requestError));
+      setSaveError(getApiErrorMessage(requestError));
     } finally {
       setSaving(false);
     }
@@ -420,11 +421,13 @@ export default function CardsPage() {
 
       <CardFormDialog
         open={dialogOpen}
-        title={editingCard ? `Karte bearbeiten: ${editingCard.name}` : 'Neue Kartenposition'}
+        title={editingCard ? `Karte bearbeiten: ${editingCard.name}` : 'Karte hinzufügen'}
         initialValue={editingCard}
         storageLocations={filters?.storage_locations || []}
         loading={saving || duplicateSaveLoading}
+        submitError={saveError}
         onClose={() => {
+          setSaveError(null);
           setDialogOpen(false);
           setEditingCard(null);
           setDuplicateConflict(null);

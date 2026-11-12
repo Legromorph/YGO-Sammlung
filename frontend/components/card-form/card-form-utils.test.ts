@@ -4,11 +4,11 @@ import {
   buildSearchLanguageQuery,
   buildSetCodeForLanguage,
   buildVariantKey,
-  isCardmarketUrl,
   normalizeOptionalPositiveNumber,
   sanitizeSelection,
   validateSetCodeLanguage,
 } from './card-form-utils';
+import { isCardmarketProductUrl } from '../../lib/pricing';
 
 const printOption = {
   set_name: 'Rarity Collection 5',
@@ -37,9 +37,9 @@ describe('card form helpers', () => {
   });
 
   it('validiert Cardmarket-Produktlinks ohne täuschende Hosts', () => {
-    expect(isCardmarketUrl(printOption.cardmarket_product_url)).toBe(true);
+    expect(isCardmarketProductUrl(printOption.cardmarket_product_url)).toBe(true);
     expect(
-      isCardmarketUrl('https://www.cardmarket.com.evil.example/en/YuGiOh/Products/Singles/A/B'),
+      isCardmarketProductUrl('https://www.cardmarket.com.evil.example/en/YuGiOh/Products/Singles/A/B'),
     ).toBe(false);
   });
 

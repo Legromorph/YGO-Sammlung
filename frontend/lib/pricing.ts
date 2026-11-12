@@ -195,3 +195,13 @@ export function priceSourceLabel(source?: string | null): string {
       return source || 'n/a';
   }
 }
+
+const CARDMARKET_PRODUCT_URL = /^https?:\/\/(?:www\.)?cardmarket\.com\/[a-z]{2}\/YuGiOh\/Products\/Singles\/[^/?#]+\/[^/?#]+/i;
+
+export function isCardmarketProductUrl(value: string | null | undefined): boolean {
+  return CARDMARKET_PRODUCT_URL.test((value || '').trim());
+}
+
+export function cardmarketSearchUrl(cardName: string): string {
+  return `https://www.cardmarket.com/de/YuGiOh/Products/Search?searchString=${encodeURIComponent(cardName)}`;
+}

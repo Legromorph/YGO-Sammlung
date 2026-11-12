@@ -1,69 +1,125 @@
-import { Grid, MenuItem, TextField } from '@mui/material';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
+import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Box,
+  Chip,
+  Grid,
+  InputAdornment,
+  MenuItem,
+  Paper,
+  Stack,
+  TextField,
+  Typography,
+} from '@mui/material';
 
+import { priceSourceLabel } from '../../lib/pricing';
 import { CardPayload, StorageLocation } from '../../lib/types';
+
+export const CONDITION_OPTIONS = [
+  { value: 'near_mint', label: 'Near Mint' },
+  { value: 'excellent', label: 'Excellent' },
+  { value: 'good', label: 'Good' },
+  { value: 'played', label: 'Played' },
+  { value: 'poor', label: 'Poor' },
+];
 
 interface InventoryFieldsProps {
   visible: boolean;
   form: CardPayload;
-  hasLookup: boolean;
   storageLocations: StorageLocation[];
-  setCodeLanguageError: string | null;
   marketPriceHelperText: string;
   tagText: string;
-  onLanguageChange: (language: string) => void;
+  cardmarketUrl?: string;
+  cardmarketUrlError?: boolean;
   onUpdate: (patch: Partial<CardPayload>) => void;
   onTagTextChange: (value: string) => void;
+  onCardmarketUrlChange?: (value: string) => void;
 }
 
 export default function InventoryFields({
   visible,
   form,
-  hasLookup,
   storageLocations,
-  setCodeLanguageError,
   marketPriceHelperText,
   tagText,
-  onLanguageChange,
+  cardmarketUrl = '',
+  cardmarketUrlError = false,
   onUpdate,
   onTagTextChange,
+  onCardmarketUrlChange,
 }: InventoryFieldsProps) {
   if (!visible) {
     return null;
   }
 
+  const isManualPrice = form.current_price_source === 'manual';
+  const hasPrice = form.current_market_price !== null && form.current_market_price !== undefined;
+
   return (
     <>
-      <Grid item xs={12} md={4}>
+      <Grid item xs={12}>
+        <Paper variant="outlined" sx={{ p: 2, bgcolor: 'rgba(216,169,76,0.05)', borderColor: 'rgba(216,169,76,0.25)' }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'flex-start' }}>
+            <TextField
+              label="Marktpreis"
+              type="number"
+              sx={{ minWidth: { sm: 200 } }}
+              value={form.current_market_price ?? ''}
+              inputProps={{ min: 0.01, step: '0.01' }}
+              InputProps={{ endAdornment: <InputAdornment position="end">{form.current_price_currency}</InputAdornment> }}
+              onChange={(event) =>
+                onUpdate({
+                  current_market_price: event.target.value ? Number(event.target.value) : undefined,
+                  current_price_source: event.target.value ? 'manual' : undefined,
+                  current_price_match_quality: event.target.value ? 'manual' : undefined,
+                  current_price_note: event.target.value ? 'Manuell gepflegter Marktpreis.' : undefined,
+                })
+              }
+            />
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Typography fontWeight={700}>
+                  {hasPrice ? (isManualPrice ? 'Eigener Preis' : 'Automatisch ermittelt') : 'Noch kein Preis'}
+                </Typography>
+                {hasPrice && !isManualPrice && form.current_price_source ? (
+                  <Chip size="small" variant="outlined" color="secondary" label={priceSourceLabel(form.current_price_source)} />
+                ) : null}
+              </Stack>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                {marketPriceHelperText ||
+                  (hasPrice
+                    ? 'Du kannst den Wert überschreiben. Nach dem Speichern wird der Preis automatisch aktuell gehalten.'
+                    : 'Leer lassen: Der Preis wird nach dem Speichern automatisch abgefragt.')}
+              </Typography>
+            </Box>
+          </Stack>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={6} md={3}>
         <TextField
-          select
-          label="Sprache"
+          label="Menge"
+          type="number"
           fullWidth
-          value={form.language}
-          onChange={(event) => onLanguageChange(event.target.value)}
-        >
-          <MenuItem value="de">Deutsch</MenuItem>
-          <MenuItem value="en">Englisch</MenuItem>
-          <MenuItem value="jp">Japanisch</MenuItem>
+          value={form.quantity}
+          inputProps={{ min: 1 }}
+          onChange={(event) => onUpdate({ quantity: Number(event.target.value) })}
+        />
+      </Grid>
+
+      <Grid item xs={6} md={3}>
+        <TextField select label="Zustand" fullWidth value={form.condition} onChange={(event) => onUpdate({ condition: event.target.value })}>
+          {CONDITION_OPTIONS.map((option) => (
+            <MenuItem key={option.value} value={option.value}>
+              {option.label}
+            </MenuItem>
+          ))}
         </TextField>
       </Grid>
 
-      <Grid item xs={12} md={4}>
-        <TextField
-          select
-          label="Zustand"
-          fullWidth
-          value={form.condition}
-          onChange={(event) => onUpdate({ condition: event.target.value })}
-        >
-          <MenuItem value="near_mint">Near Mint</MenuItem>
-          <MenuItem value="excellent">Excellent</MenuItem>
-          <MenuItem value="good">Good</MenuItem>
-          <MenuItem value="played">Played</MenuItem>
-          <MenuItem value="poor">Poor</MenuItem>
-        </TextField>
-      </Grid>
-
-      <Grid item xs={12} md={4}>
+      <Grid item xs={12} md={3}>
         <TextField
           label="Lagerort"
           select
@@ -84,39 +140,14 @@ export default function InventoryFields({
         </TextField>
       </Grid>
 
-      <Grid item xs={12} md={4}>
+      <Grid item xs={12} md={3}>
         <TextField
-          label={hasLookup ? 'Gespeicherter Setcode' : 'Setcode'}
-          fullWidth
-          error={Boolean(setCodeLanguageError)}
-          helperText={
-            setCodeLanguageError ||
-            (hasLookup ? 'Wird passend zur gewählten Sprache automatisch umgeschrieben.' : undefined)
-          }
-          value={form.set_code || ''}
-          onChange={(event) => onUpdate({ set_code: event.target.value })}
-          InputProps={hasLookup ? { readOnly: true } : undefined}
-        />
-      </Grid>
-
-      <Grid item xs={12} md={4}>
-        <TextField
-          label="Menge"
-          type="number"
-          fullWidth
-          value={form.quantity}
-          inputProps={{ min: 1 }}
-          onChange={(event) => onUpdate({ quantity: Number(event.target.value) })}
-        />
-      </Grid>
-
-      <Grid item xs={12} md={4}>
-        <TextField
-          label="Einkaufspreis"
+          label="Einkaufspreis (Stück)"
           type="number"
           fullWidth
           value={form.purchase_price ?? ''}
           inputProps={{ min: 0, step: '0.01' }}
+          InputProps={{ endAdornment: <InputAdornment position="end">{form.current_price_currency}</InputAdornment> }}
           onChange={(event) =>
             onUpdate({
               purchase_price: event.target.value ? Number(event.target.value) : undefined,
@@ -125,59 +156,39 @@ export default function InventoryFields({
         />
       </Grid>
 
-      <Grid item xs={12} md={4}>
-        <TextField
-          label="Marktpreis"
-          type="number"
-          fullWidth
-          value={form.current_market_price ?? ''}
-          inputProps={{ min: 0.01, step: '0.01' }}
-          onChange={(event) =>
-            onUpdate({
-              current_market_price: event.target.value ? Number(event.target.value) : undefined,
-              current_price_source: event.target.value ? 'manual' : undefined,
-              current_price_match_quality: event.target.value ? 'manual' : undefined,
-              current_price_note: event.target.value ? 'Manuell gepflegter Marktpreis.' : undefined,
-            })
-          }
-          helperText={marketPriceHelperText || undefined}
-        />
-      </Grid>
-
-      <Grid item xs={12} md={4}>
-        <TextField
-          label="Währung"
-          fullWidth
-          value={form.current_price_currency}
-          onChange={(event) =>
-            onUpdate({
-              current_price_currency: event.target.value,
-              current_price_source: 'manual',
-              current_price_match_quality: 'manual',
-              current_price_note: 'Manuell gepflegter Marktpreis.',
-            })
-          }
-        />
-      </Grid>
-
       <Grid item xs={12}>
-        <TextField
-          label="Tags (kommagetrennt)"
-          fullWidth
-          value={tagText}
-          onChange={(event) => onTagTextChange(event.target.value)}
-        />
-      </Grid>
-
-      <Grid item xs={12}>
-        <TextField
-          label="Notizen"
-          fullWidth
-          multiline
-          minRows={2}
-          value={form.notes || ''}
-          onChange={(event) => onUpdate({ notes: event.target.value })}
-        />
+        <Accordion disableGutters variant="outlined" sx={{ bgcolor: 'transparent', borderRadius: 2, '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}>
+            <Typography>Weitere Angaben (optional)</Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Stack spacing={2}>
+              {onCardmarketUrlChange ? (
+                <TextField
+                  label="Cardmarket-Produktlink"
+                  fullWidth
+                  value={cardmarketUrl}
+                  error={cardmarketUrlError}
+                  onChange={(event) => onCardmarketUrlChange(event.target.value)}
+                  helperText={
+                    cardmarketUrlError
+                      ? 'Bitte einen Link auf eine Cardmarket-Produktseite einfügen.'
+                      : 'Optional. Wird nur gespeichert, nicht abgerufen.'
+                  }
+                />
+              ) : null}
+              <TextField label="Tags (kommagetrennt)" fullWidth value={tagText} onChange={(event) => onTagTextChange(event.target.value)} />
+              <TextField
+                label="Notizen"
+                fullWidth
+                multiline
+                minRows={2}
+                value={form.notes || ''}
+                onChange={(event) => onUpdate({ notes: event.target.value })}
+              />
+            </Stack>
+          </AccordionDetails>
+        </Accordion>
       </Grid>
     </>
   );

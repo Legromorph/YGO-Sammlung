@@ -1,3 +1,4 @@
+import { type ReactNode } from 'react';
 import {
   Autocomplete,
   Avatar,
@@ -46,6 +47,7 @@ interface CardLookupFieldsProps {
   setCode?: string | null;
   rarity?: string | null;
   setCodeLanguageError: string | null;
+  languageField?: ReactNode;
   onNameInputChange: (value: string, reason: string) => void;
   onSuggestionChange: (option: CardLookupSuggestion | string | null) => void;
   onSetGroupChange: (groupKey: string) => void;
@@ -77,6 +79,7 @@ export default function CardLookupFields({
   setCode,
   rarity,
   setCodeLanguageError,
+  languageField,
   onNameInputChange,
   onSuggestionChange,
   onSetGroupChange,
@@ -87,24 +90,31 @@ export default function CardLookupFields({
     <>
       {lookupData ? (
         <Grid item xs={12}>
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-            <Chip color="primary" variant="outlined" label={`Karte: ${lookupData.name}`} />
-            {selectedSetGroup ? <Chip variant="outlined" label={`Set: ${selectedSetGroup.label}`} /> : null}
-            {resolvedPrint ? (
-              <Chip color="success" variant="outlined" label={`Variante: ${buildVariantLabel(resolvedPrint)}`} />
-            ) : null}
-            {lookupData.image_url ? (
-              <Chip
-                variant="outlined"
-                label="Kartendaten geladen"
-                avatar={<Avatar alt={lookupData.name} src={resolveMediaUrl(lookupData.image_url)} />}
-              />
-            ) : null}
+          <Stack direction="row" spacing={2} alignItems="center">
+            <Avatar
+              alt={lookupData.name}
+              src={resolveMediaUrl(lookupData.image_url)}
+              variant="rounded"
+              sx={{ width: 56, height: 80, bgcolor: 'rgba(255,255,255,0.05)' }}
+            />
+            <Box sx={{ minWidth: 0 }}>
+              <Typography fontWeight={800}>{lookupData.name}</Typography>
+              <Typography variant="body2" color="text.secondary">
+                {resolvedPrint
+                  ? buildVariantLabel(resolvedPrint)
+                  : needsSetSelection
+                    ? 'Schritt 2: Set wählen'
+                    : needsVariantSelection
+                      ? 'Schritt 3: Rarität / Variante wählen'
+                      : selectedSetGroup?.label}
+              </Typography>
+              {resolvedPrint ? <Chip size="small" color="success" variant="outlined" label="Print eindeutig" sx={{ mt: 0.75 }} /> : null}
+            </Box>
           </Stack>
         </Grid>
       ) : null}
 
-      <Grid item xs={12}>
+      <Grid item xs={12} md={languageField ? 9 : 12}>
         <Autocomplete<CardLookupSuggestion, false, false, true>
           freeSolo
           options={suggestions}
@@ -157,10 +167,8 @@ export default function CardLookupFields({
               label="Kartenname"
               helperText={
                 lookupData
-                  ? 'Karte erkannt. Jetzt Set und bei Bedarf die genaue Variante wählen.'
-                  : `Suche gleichzeitig in ${
-                      searchLanguageLabel || 'DE, EN'
-                    }. Weitere Felder erscheinen nach der Kartenauswahl.`
+                  ? undefined
+                  : `Name eintippen und Karte aus der Liste wählen (Suche in ${searchLanguageLabel || 'DE, EN'}).`
               }
               InputProps={{
                 ...params.InputProps,
@@ -177,6 +185,11 @@ export default function CardLookupFields({
           )}
         />
       </Grid>
+      {languageField ? (
+        <Grid item xs={12} md={3}>
+          {languageField}
+        </Grid>
+      ) : null}
 
       {lookupData ? (
         <>

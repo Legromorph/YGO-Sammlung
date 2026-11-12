@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -17,7 +18,7 @@ from app.schemas import (
     CardPayload,
     CardSummary,
     PriceHistoryPoint,
-    SyncJobResponse,
+    PriceRefreshResponse,
 )
 from app.services.app_settings import get_app_settings
 from app.services.card_creation import get_card_creation_orchestrator
@@ -33,7 +34,7 @@ from app.services.cards import (
     update_cardmarket_link,
     upsert_card,
 )
-from app.services.sync import queue_price_update_job, serialize_sync_job
+from app.services.sync import queue_price_update_job, refresh_prices_now, serialize_sync_job
 from app.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -212,21 +213,49 @@ async def update_card_cardmarket_link(card_id: int, payload: CardmarketLinkPaylo
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
-@router.post("/{card_id}/price-update", response_model=SyncJobResponse, status_code=status.HTTP_202_ACCEPTED)
-async def trigger_price_update(card_id: int, db: AsyncSession = Depends(get_db)) -> SyncJobResponse:
+@router.post("/{card_id}/price-update", response_model=PriceRefreshResponse)
+async def refresh_card_price(card_id: int, db: AsyncSession = Depends(get_db)) -> PriceRefreshResponse:
+    """Fetch the price right away; only fall back to the job queue if the provider is too slow."""
     card = await get_card_detail(db, card_id)
     if not card:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+    await db.commit()
 
-    job = await queue_price_update_job(
-        inventory_item_ids=[card_id],
-        card_print_ids=[card.card_print_id],
-        trigger="manual",
-        reason="manual_price_update_button",
-        available_at=utc_now(),
-        priority=settings.price_monitor_manual_priority,
+    job = None
+    try:
+        summary = await asyncio.wait_for(
+            refresh_prices_now([card_id]),
+            timeout=max(15, settings.request_timeout_seconds * 2),
+        )
+        refresh_status = "updated" if summary.get("updated_items") else "no_price"
+    except Exception as exc:
+        logger.warning("Instant price refresh for inventory item %s failed, queueing job: %s", card_id, exc)
+        job = await queue_price_update_job(
+            inventory_item_ids=[card_id],
+            card_print_ids=[card.card_print_id],
+            trigger="manual",
+            reason="instant_refresh_fallback",
+            available_at=utc_now(),
+            priority=settings.price_monitor_manual_priority,
+        )
+        refresh_status = "queued"
+
+    db.expire_all()
+    refreshed = await get_card_detail(db, card_id)
+    if not refreshed:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found")
+
+    messages = {
+        "updated": "Preis aktualisiert.",
+        "no_price": "Kein neuer Preis gefunden. Der bisherige Preis bleibt erhalten.",
+        "queued": "Die Preisquelle antwortet gerade langsam. Das Update läuft im Hintergrund weiter.",
+    }
+    return PriceRefreshResponse(
+        status=refresh_status,
+        message=messages[refresh_status],
+        card=refreshed,
+        job=serialize_sync_job(job) if job else None,
     )
-    return serialize_sync_job(job)
 
 
 @router.delete("/{card_id}", status_code=status.HTTP_200_OK)

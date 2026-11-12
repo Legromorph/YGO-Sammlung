@@ -572,6 +572,20 @@ async def _run_price_sync(payload: dict | None = None) -> dict:
         "failed_items": failed,
     }
 
+async def refresh_prices_now(inventory_item_ids: list[int], *, trigger: str = "manual_instant") -> dict:
+    """Fetch prices for the given items inside the current request instead of the job queue.
+
+    Returns the price run summary. A run that finds no usable price is reported
+    with ``updated_items == 0`` instead of raising.
+    """
+    payload = {"inventory_item_ids": inventory_item_ids, "trigger": trigger}
+    try:
+        return await _run_price_sync(payload)
+    except RuntimeError as exc:
+        if str(exc).startswith("Kein Marktpreis"):
+            return {"updated_items": 0, "failed_items": len(inventory_item_ids), "matched_items": len(inventory_item_ids)}
+        raise
+
 async def _run_image_sync(payload: dict | None = None) -> dict:
     target_inventory_item_ids, target_card_print_ids = _extract_price_targets(payload)
     provider = get_active_image_provider()

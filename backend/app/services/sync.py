@@ -14,7 +14,7 @@ from app.services.sync_jobs import (
     retry_sync_job,
     serialize_sync_job,
 )
-from app.services.sync_tasks import bootstrap_missing_media
+from app.services.sync_tasks import bootstrap_missing_media, refresh_prices_now
 
 __all__ = [
     "bootstrap_missing_media",
@@ -28,6 +28,7 @@ __all__ = [
     "process_claimed_sync_job",
     "queue_price_update_job",
     "queue_sync_job",
+    "refresh_prices_now",
     "retry_sync_job",
     "serialize_sync_job",
 ]

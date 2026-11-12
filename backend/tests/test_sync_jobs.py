@@ -66,3 +66,27 @@ class PriceJobTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstantPriceRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_price_is_reported_instead_of_raised(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from app.services import sync_tasks
+
+        failing_run = AsyncMock(side_effect=RuntimeError("Kein Marktpreis konnte aktualisiert werden (1 fehlgeschlagene Abfrage(n))."))
+        with patch.object(sync_tasks, "_run_price_sync", failing_run):
+            summary = await sync_tasks.refresh_prices_now([5])
+
+        self.assertEqual(summary["updated_items"], 0)
+        failing_run.assert_awaited_once()
+        self.assertEqual(failing_run.await_args.args[0]["inventory_item_ids"], [5])
+
+    async def test_unexpected_errors_propagate(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from app.services import sync_tasks
+
+        with patch.object(sync_tasks, "_run_price_sync", AsyncMock(side_effect=RuntimeError("provider down"))):
+            with self.assertRaises(RuntimeError):
+                await sync_tasks.refresh_prices_now([5])

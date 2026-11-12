@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -586,3 +587,10 @@ class HealthResponse(BaseModel):
     database: bool
     image_directory: bool
     active_providers: dict[str, str]
+
+
+class PriceRefreshResponse(BaseModel):
+    status: Literal["updated", "no_price", "queued"]
+    message: str
+    card: CardDetail
+    job: SyncJobResponse | None = None

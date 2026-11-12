@@ -22,12 +22,9 @@ describe('InventoryFields', () => {
       <InventoryFields
         visible
         form={form}
-        hasLookup={false}
         storageLocations={[]}
-        setCodeLanguageError={null}
         marketPriceHelperText=""
         tagText=""
-        onLanguageChange={vi.fn()}
         onUpdate={onUpdate}
         onTagTextChange={vi.fn()}
       />,
@@ -48,12 +45,9 @@ describe('InventoryFields', () => {
       <InventoryFields
         visible={false}
         form={form}
-        hasLookup={false}
         storageLocations={[]}
-        setCodeLanguageError={null}
         marketPriceHelperText=""
         tagText=""
-        onLanguageChange={vi.fn()}
         onUpdate={vi.fn()}
         onTagTextChange={vi.fn()}
       />,

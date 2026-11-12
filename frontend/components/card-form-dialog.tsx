@@ -8,6 +8,7 @@ import {
   DialogContent,
   DialogTitle,
   Grid,
+  MenuItem,
   Stack,
   TextField,
   useMediaQuery,
@@ -15,6 +16,7 @@ import {
 } from '@mui/material';
 
 import api, { getApiErrorMessage } from '../lib/api';
+import { isCardmarketProductUrl } from '../lib/pricing';
 import { useDebouncedValue } from '../hooks/use-debounced-value';
 import { useAppSettings } from './app-settings-provider';
 import CardLookupFields from './card-form/card-lookup-fields';
@@ -31,7 +33,6 @@ import {
   buildVariantKey,
   defaultPayload,
   getLanguageAwarePrintOptions,
-  isCardmarketUrl,
   normalizeOptionalPositiveNumber,
   normalizeSetGroupKey,
   parseLanguageList,
@@ -56,6 +57,7 @@ interface CardFormDialogProps {
   initialValue?: CardDetail | null;
   storageLocations: StorageLocation[];
   loading?: boolean;
+  submitError?: string | null;
   onClose: () => void;
   onSubmit: (payload: CardPayload) => Promise<void>;
 }
@@ -67,6 +69,7 @@ export default function CardFormDialog({
   initialValue,
   storageLocations,
   loading = false,
+  submitError = null,
   onClose,
   onSubmit,
 }: CardFormDialogProps) {
@@ -258,11 +261,10 @@ export default function CardFormDialog({
   );
   const selectedVariantKey = useMemo(() => (resolvedPrint ? buildVariantKey(resolvedPrint) : ''), [resolvedPrint]);
 
-  const needsDisambiguation = Boolean(lookupData && printOptions.length > 1 && !resolvedPrint);
   const needsSetSelection = Boolean(lookupData && setGroupOptions.length > 1 && !selectedSetGroup);
   const needsVariantSelection = Boolean(lookupData && selectedSetGroup && variantOptions.length > 1 && !resolvedPrint);
   const trimmedCardmarketUrl = cardmarketUrl.trim();
-  const cardmarketUrlError = Boolean(trimmedCardmarketUrl && !isCardmarketUrl(trimmedCardmarketUrl));
+  const cardmarketUrlError = Boolean(trimmedCardmarketUrl && !isCardmarketProductUrl(trimmedCardmarketUrl));
   const showManualPrintFields = !lookupData && Boolean(form.name.trim());
   const showInventoryFields = showManualPrintFields || Boolean(resolvedPrint) || Boolean(lookupData && !printOptions.length);
   const setCodeLanguageError = useMemo(
@@ -272,13 +274,16 @@ export default function CardFormDialog({
 
   const marketPriceHelperText = useMemo(() => {
     const messages: string[] = [];
+    if (form.current_price_source === 'manual') {
+      return '';
+    }
     if (resolvedPrint?.price_note) {
       messages.push(resolvedPrint.price_note);
     } else if (lookupData?.price_note) {
       messages.push(lookupData.price_note);
     }
-    if (lookupData && !lookupData.condition_price_supported && form.condition !== 'near_mint') {
-      messages.push('Der gewählte Zustand wird aktuell nicht automatisch in den Provider-Preis eingerechnet. Bitte Marktpreis prüfen.');
+    if (form.current_price_source !== 'manual' && form.condition !== 'near_mint') {
+      messages.push('Der Zustand ist im automatischen Preis nicht berücksichtigt.');
     }
     return messages.join(' ');
   }, [form.condition, lookupData, resolvedPrint]);
@@ -452,7 +457,7 @@ export default function CardFormDialog({
     }
 
     const resolvedUrl = (resolvedPrint.cardmarket_product_url || resolvedPrint.cardmarket_reference || '').trim();
-    if (!isCardmarketUrl(resolvedUrl)) {
+    if (!isCardmarketProductUrl(resolvedUrl)) {
       return;
     }
     if (resolvedUrl === cardmarketUrl.trim()) {
@@ -481,11 +486,40 @@ export default function CardFormDialog({
     });
   }, [lookupData, open, resolvedPrint, selectedSetGroup, setGroupOptions]);
 
+  const handleLanguageChange = (nextLanguage: string) => {
+    if (lookupData) {
+      applyLookupPayload(lookupData, {}, nextLanguage);
+      return;
+    }
+    updateForm({
+      language: nextLanguage,
+      set_code: buildSetCodeForLanguage(form.set_code, nextLanguage) || form.set_code,
+      cardmarket_expected_language: nextLanguage,
+    });
+  };
+
+  const handleCardmarketUrlChange = (nextUrl: string) => {
+    setCardmarketUrl(nextUrl);
+    setForm((current) => {
+      const nextExternalIds = { ...current.external_ids };
+      delete nextExternalIds.cardmarket;
+      return {
+        ...current,
+        cardmarket_reference: nextUrl.trim() || undefined,
+        cardmarket_product_url: isCardmarketProductUrl(nextUrl.trim()) ? nextUrl.trim() : undefined,
+        cardmarket_product_slug: undefined,
+        cardmarket_set_slug: undefined,
+        cardmarket_variant_name: undefined,
+        external_ids: nextExternalIds,
+      };
+    });
+  };
+
   const handleSubmit = async () => {
     if (setCodeLanguageError) {
       return;
     }
-    const manualCardmarketUrl = isCardmarketUrl(trimmedCardmarketUrl) ? trimmedCardmarketUrl : undefined;
+    const manualCardmarketUrl = isCardmarketProductUrl(trimmedCardmarketUrl) ? trimmedCardmarketUrl : undefined;
     await onSubmit({
       ...form,
       quantity: Number(form.quantity) || 1,
@@ -579,47 +613,9 @@ export default function CardFormDialog({
         <Stack spacing={2.25} sx={{ mt: 0.25 }}>
           {lookupError ? <Alert severity="error">{lookupError}</Alert> : null}
 
-          {needsDisambiguation ? (
-            <Alert severity="warning">
-              {needsSetSelection
-                ? 'Karte erkannt. Bitte jetzt zuerst das richtige Set wählen.'
-                : 'Das Set ist erkannt. Bitte jetzt noch die passende Rarität bzw. Variante wählen, bevor die restlichen Felder freigeschaltet werden.'}
-            </Alert>
-          ) : null}
-
+          {submitError ? <Alert severity="error">{submitError}</Alert> : null}
 
           <Grid container spacing={2} sx={{ mt: 0.1 }}>
-            <Grid item xs={12}>
-              <TextField
-                label="Cardmarket-Link"
-                fullWidth
-                value={cardmarketUrl}
-                error={cardmarketUrlError}
-                onChange={(event) => {
-                  const nextUrl = event.target.value;
-                  setCardmarketUrl(nextUrl);
-                  setForm((current) => {
-                    const nextExternalIds = { ...current.external_ids };
-                    delete nextExternalIds.cardmarket;
-                    return {
-                      ...current,
-                      cardmarket_reference: nextUrl.trim() || undefined,
-                      cardmarket_product_url: isCardmarketUrl(nextUrl.trim()) ? nextUrl.trim() : undefined,
-                      cardmarket_product_slug: undefined,
-                      cardmarket_set_slug: undefined,
-                      cardmarket_variant_name: undefined,
-                      external_ids: nextExternalIds,
-                    };
-                  });
-                }}
-                helperText={
-                  cardmarketUrlError
-                    ? 'Bitte einen gültigen Cardmarket-Produktlink eintragen.'
-                    : 'Der Link wird ohne Seitenabruf gespeichert und kann anschließend in den Kartendetails bestätigt werden.'
-                }
-              />
-            </Grid>
-
             <CardLookupFields
               lookupData={lookupData}
               suggestions={suggestions}
@@ -640,6 +636,13 @@ export default function CardFormDialog({
               setCode={form.set_code}
               rarity={form.rarity}
               setCodeLanguageError={setCodeLanguageError}
+              languageField={
+                <TextField select label="Sprache" fullWidth value={form.language} onChange={(event) => handleLanguageChange(event.target.value)}>
+                  <MenuItem value="de">Deutsch</MenuItem>
+                  <MenuItem value="en">Englisch</MenuItem>
+                  <MenuItem value="jp">Japanisch</MenuItem>
+                </TextField>
+              }
               onNameInputChange={(value, reason) => {
                 if (
                   (reason === 'input' || reason === 'clear') &&
@@ -673,22 +676,12 @@ export default function CardFormDialog({
             <InventoryFields
               visible={showInventoryFields}
               form={form}
-              hasLookup={Boolean(lookupData)}
               storageLocations={storageLocations}
-              setCodeLanguageError={setCodeLanguageError}
               marketPriceHelperText={marketPriceHelperText}
               tagText={tagText}
-              onLanguageChange={(nextLanguage) => {
-                if (lookupData) {
-                  applyLookupPayload(lookupData, {}, nextLanguage);
-                  return;
-                }
-                updateForm({
-                  language: nextLanguage,
-                  set_code: buildSetCodeForLanguage(form.set_code, nextLanguage) || form.set_code,
-                  cardmarket_expected_language: nextLanguage,
-                });
-              }}
+              cardmarketUrl={cardmarketUrl}
+              cardmarketUrlError={cardmarketUrlError}
+              onCardmarketUrlChange={handleCardmarketUrlChange}
               onUpdate={updateForm}
               onTagTextChange={setTagText}
             />
