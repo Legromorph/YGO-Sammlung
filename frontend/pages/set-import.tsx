@@ -419,6 +419,7 @@ export default function SetImportPage() {
           <TextField
             label="Kaufpreis gesamt"
             placeholder="optional"
+            InputLabelProps={{ shrink: true }}
             inputMode="decimal"
             value={purchasePrice}
             onChange={(event) => setPurchasePrice(event.target.value)}

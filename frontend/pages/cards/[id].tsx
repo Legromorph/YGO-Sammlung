@@ -32,6 +32,7 @@ import {
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import CardFormDialog from '../../components/card-form-dialog';
+import { CONDITION_OPTIONS } from '../../components/card-form/inventory-fields';
 import CardMetadataList from '../../components/card-metadata-list';
 import api, { getApiErrorMessage, resolveMediaUrl } from '../../lib/api';
 import { formatCurrency, formatDate, formatPercent } from '../../lib/format';
@@ -89,6 +90,10 @@ function ValueTile({ label, children }: { label: string; children: ReactNode }) 
       <Box sx={{ mt: 0.75 }}>{children}</Box>
     </Paper>
   );
+}
+
+function conditionLabel(value: string | null | undefined): string {
+  return CONDITION_OPTIONS.find((option) => option.value === value)?.label || value || '';
 }
 
 export default function CardDetailPage() {
@@ -305,7 +310,7 @@ export default function CardDetailPage() {
               <Chip label={card.set_code || 'Kein Setcode'} color="primary" variant="outlined" />
               {card.rarity ? <Chip label={card.rarity} variant="outlined" /> : null}
               <Chip label={card.language.toUpperCase()} variant="outlined" />
-              <Chip label={card.condition} color="secondary" variant="outlined" />
+              <Chip label={conditionLabel(card.condition)} color="secondary" variant="outlined" />
               {card.set_name ? <Chip label={card.set_name} variant="outlined" /> : null}
             </Stack>
 

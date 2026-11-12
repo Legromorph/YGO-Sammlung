@@ -124,7 +124,11 @@ export default function Home() {
     return <Alert severity="error">{error}</Alert>;
   }
   if (!stats) {
-    return <CircularProgress />;
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', py: 10 }}>
+        <CircularProgress />
+      </Box>
+    );
   }
 
   const currency = stats.display_currency;
@@ -235,7 +239,7 @@ export default function Home() {
             {attentionCount ? (
               <List disablePadding>
                 <AttentionRow count={stats.missing_price_count} label="Positionen ohne Preis" href="/cards?has_price=no" />
-                <AttentionRow count={stats.uncertain_price_count} label="Preise nur als Kartenpreis (Print nicht exakt)" href="/cards" />
+                <AttentionRow count={stats.uncertain_price_count} label="Positionen nur mit Mindestpreis (Print ohne eigenen Preis)" href="/cards" />
                 <AttentionRow count={stats.stale_price_count} label="Preise älter als 30 Tage" href="/cards" />
                 <AttentionRow count={stats.failed_jobs_count} label="fehlgeschlagene Hintergrundjobs (7 Tage)" href="/sync-status" />
               </List>
