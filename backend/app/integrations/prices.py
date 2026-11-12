@@ -77,7 +77,7 @@ class YgoProDeckPriceProvider:
             async with semaphore:
                 try:
                     return await asyncio.wait_for(
-                        provider.fetch_cards_for_set(set_name, tcgplayer_data=True),
+                        provider.fetch_cards_for_set(set_name),
                         timeout=self.lookup_timeout_seconds,
                     )
                 except asyncio.TimeoutError:
@@ -147,7 +147,6 @@ class YgoProDeckPriceProvider:
                 external_id=external_id,
                 name=card.name,
                 language=None if external_id else card_print.language,
-                tcgplayer_data=True,
             )
         base_indicators = {
             "provider_lookup_external_id": external_id,
@@ -231,8 +230,8 @@ class YgoProDeckPriceProvider:
         generic_cardmarket_price = parse_positive_price((remote_card.get("prices") or {}).get("cardmarket_price"))
         if settings.price_allow_card_level_fallback and generic_cardmarket_price is not None:
             note = (
-                "Kein positiver Printpreis vorhanden. Verwendet wird der niedrigste Cardmarket-Kartenpreis "
-                "über alle Druckversionen via YGOPRODeck; bitte den Print prüfen."
+                "Für diesen Print gibt es keinen eigenen Preis. Angezeigt wird der günstigste "
+                "Cardmarket-Preis dieser Karte über alle Drucke (Mindestpreis)."
             )
             source_key = f"{self.provider_key}:cardmarket_card_price"
             return PriceSnapshot(

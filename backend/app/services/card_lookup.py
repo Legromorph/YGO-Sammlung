@@ -258,7 +258,6 @@ async def _fetch_remote_card_for_languages(
             name=name,
             external_id=external_id,
             language=candidate_language,
-            tcgplayer_data=True,
         )
         if remote_card:
             return remote_card, candidate_language
@@ -267,7 +266,6 @@ async def _fetch_remote_card_for_languages(
         name=name,
         external_id=external_id,
         language=None,
-        tcgplayer_data=True,
     )
     return remote_card, (search_languages[0] if search_languages else "de")
 

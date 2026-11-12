@@ -25,10 +25,11 @@ export function priceMatchLabel(matchQuality?: string | null): string {
     case 'set_name_verified_name_only':
     case 'high_confidence':
       return 'Teilweise verifiziert';
+    case 'fallback_name_only':
+      return 'Mindestpreis (günstigster Druck)';
     case 'ambiguous':
     case 'failed':
     case 'fallback':
-    case 'fallback_name_only':
       return 'Fallback';
     case 'new':
       return 'Neu';
@@ -180,7 +181,7 @@ export function priceSourceLabel(source?: string | null): string {
     case 'ygoprodeck:tcgplayer_set_price':
       return 'TCGPlayer-Printpreis via YGOPRODeck';
     case 'ygoprodeck:cardmarket_card_price':
-      return 'Cardmarket-Kartenpreis via YGOPRODeck';
+      return 'Cardmarket-Mindestpreis (alle Drucke)';
     case 'ygoprodeck:cardmarket':
       return 'Cardmarket-Kartenpreis via YGOPRODeck';
     case 'ygoprodeck:tcgplayer':

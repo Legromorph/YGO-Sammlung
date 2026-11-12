@@ -70,7 +70,7 @@ class YgoProDeckPriceProviderTests(unittest.IsolatedAsyncioTestCase):
             external_id="38423248",
         )
 
-    async def test_uses_positive_exact_print_price_from_tcgplayer_dataset(self) -> None:
+    async def test_uses_positive_exact_print_price(self) -> None:
         remote_card = {
             "external_id": "38423248",
             "card_sets": [
@@ -106,7 +106,6 @@ class YgoProDeckPriceProviderTests(unittest.IsolatedAsyncioTestCase):
             external_id="38423248",
             name=self.card.name,
             language=None,
-            tcgplayer_data=True,
         )
 
     async def test_zero_exact_price_uses_labeled_card_level_fallback(self) -> None:
@@ -181,7 +180,6 @@ class YgoProDeckPriceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.indicators["provider_lookup_mode"], "prefetched_set")
         data_provider.fetch_cards_for_set.assert_awaited_once_with(
             "Burst Protocol",
-            tcgplayer_data=True,
         )
         data_provider.fetch_card.assert_not_awaited()
 
@@ -227,3 +225,25 @@ class PriceMonitorSampleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FallbackProtectionTests(unittest.TestCase):
+    def _item(self, *, price, source, quality):
+        from app.models import InventoryItem
+
+        return InventoryItem(current_market_price=price, last_price_source=source, last_price_match_quality=quality)
+
+    def test_card_level_fallback_never_replaces_manual_or_exact_prices(self) -> None:
+        from types import SimpleNamespace
+
+        from app.integrations.prices import PRICE_MATCH_FALLBACK_NAME_ONLY
+        from app.services.sync_tasks import _fallback_would_replace_better_price
+
+        fallback = SimpleNamespace(match_quality=PRICE_MATCH_FALLBACK_NAME_ONLY)
+        exact = SimpleNamespace(match_quality="exact")
+
+        self.assertTrue(_fallback_would_replace_better_price(self._item(price=74, source="manual", quality="manual"), fallback))
+        self.assertTrue(_fallback_would_replace_better_price(self._item(price=5, source="ygoprodeck:tcgplayer_set_price", quality="exact"), fallback))
+        self.assertFalse(_fallback_would_replace_better_price(self._item(price=None, source=None, quality=None), fallback))
+        self.assertFalse(_fallback_would_replace_better_price(self._item(price=1, source="ygoprodeck:cardmarket_card_price", quality=PRICE_MATCH_FALLBACK_NAME_ONLY), fallback))
+        self.assertFalse(_fallback_would_replace_better_price(self._item(price=74, source="manual", quality="manual"), exact))

@@ -95,7 +95,6 @@ class YgoProDeckCardDataProvider:
         name: str | None = None,
         external_id: str | None = None,
         language: str | None = None,
-        tcgplayer_data: bool = False,
     ) -> dict[str, Any] | None:
         def select_candidate(data: list[dict[str, Any]]) -> dict[str, Any] | None:
             if external_id:
@@ -111,8 +110,6 @@ class YgoProDeckCardDataProvider:
 
         async def attempt(request_language: str | None) -> dict[str, Any] | None:
             params: dict[str, Any] = {"misc": "yes"}
-            if tcgplayer_data:
-                params["tcgplayer_data"] = "yes"
             if external_id:
                 params["id"] = external_id
             elif name:
@@ -126,10 +123,7 @@ class YgoProDeckCardDataProvider:
             data = await self._request(params)
             candidate = select_candidate(data)
             if candidate:
-                return self._normalize_card(
-                    candidate,
-                    price_dataset="tcgplayer" if tcgplayer_data else "default",
-                )
+                return self._normalize_card(candidate)
 
             if name and not external_id:
                 params.pop("name", None)
@@ -137,10 +131,7 @@ class YgoProDeckCardDataProvider:
                 data = await self._request(params)
                 candidate = select_candidate(data)
                 if candidate:
-                    return self._normalize_card(
-                        candidate,
-                        price_dataset="tcgplayer" if tcgplayer_data else "default",
-                    )
+                    return self._normalize_card(candidate)
 
             return None
 
@@ -219,17 +210,14 @@ class YgoProDeckCardDataProvider:
         self,
         set_name: str,
         language: str | None = None,
-        *,
-        tcgplayer_data: bool = False,
     ) -> list[dict[str, Any]]:
         async def attempt(request_language: str | None) -> list[dict[str, Any]]:
+            # card_sets[].set_price (TCGPlayer print price) is part of every response;
+            # the former tcgplayer_data parameter is rejected with HTTP 400.
             params: dict[str, Any] = {"cardset": set_name, "misc": "yes"}
-            if tcgplayer_data:
-                params["tcgplayer_data"] = "yes"
             if request_language and request_language.lower() not in {"", "en"}:
                 params["language"] = request_language.lower()
-            price_dataset = "tcgplayer" if tcgplayer_data else "default"
-            return [self._normalize_card(entry, price_dataset=price_dataset) for entry in await self._request(params)]
+            return [self._normalize_card(entry) for entry in await self._request(params)]
 
         direct = await attempt(language)
         if direct:
@@ -423,7 +411,7 @@ class YgoProDeckCardDataProvider:
             return int(ratio * 650)
         return 0
 
-    def _normalize_card(self, raw: dict[str, Any], *, price_dataset: str = "default") -> dict[str, Any]:
+    def _normalize_card(self, raw: dict[str, Any]) -> dict[str, Any]:
         card_sets = raw.get("card_sets", []) or []
         card_images = raw.get("card_images", []) or []
         prices = (raw.get("card_prices") or [{}])[0]
@@ -464,7 +452,6 @@ class YgoProDeckCardDataProvider:
             ],
             "card_images": card_images,
             "prices": prices,
-            "price_dataset": price_dataset,
             "payload": raw,
         }
 

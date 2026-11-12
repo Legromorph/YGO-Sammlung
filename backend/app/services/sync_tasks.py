@@ -16,7 +16,7 @@ from app.integrations.card_data import get_card_data_provider
 from app.integrations.images import get_active_image_provider
 from app.integrations.cardmarket import CARDMARKET_SAFE_MATCH_QUALITIES
 from app.integrations.price_values import parse_positive_price
-from app.integrations.prices import get_active_price_provider
+from app.integrations.prices import PRICE_MATCH_FALLBACK_NAME_ONLY, get_active_price_provider
 from app.models import Card, CardPrint, ImageAsset, InventoryItem, PriceHistory, SourceMapping, SyncJob
 from app.services.price_monitor import (
     _low_value_threshold_for_currency,
@@ -235,6 +235,26 @@ def _apply_cardmarket_snapshot_metadata(item: InventoryItem, snapshot: object) -
         except ValueError:
             logger.warning("Invalid Cardmarket verification time for inventory item %s: %s", item.id, verified_at)
 
+_PRECISE_PRICE_QUALITIES = {
+    "manual",
+    "manual_verified",
+    "exact",
+    "exact_verified",
+    "exact_verified_variant",
+    "high_confidence",
+    "set_name_verified_name_only",
+}
+
+
+def _fallback_would_replace_better_price(item: InventoryItem, snapshot: object) -> bool:
+    """A card-level fallback (cheapest print of the card) must never replace a manual or print-exact price."""
+    if getattr(snapshot, "match_quality", None) != PRICE_MATCH_FALLBACK_NAME_ONLY:
+        return False
+    if parse_positive_price(item.current_market_price) is None:
+        return False
+    return item.last_price_source == "manual" or item.last_price_match_quality in _PRECISE_PRICE_QUALITIES
+
+
 async def _persist_price_snapshot(
     inventory_item_id: int,
     snapshot: object,
@@ -261,6 +281,18 @@ async def _persist_price_snapshot(
                 db,
                 item,
                 error_message=getattr(snapshot, "note", None) or "Provider returned no positive market price.",
+                checked_at=checked_at,
+            )
+            return False
+
+        if _fallback_would_replace_better_price(item, snapshot):
+            await record_price_monitor_failure(
+                db,
+                item,
+                error_message=(
+                    "Nur ein allgemeiner Kartenpreis verfügbar; der bisherige "
+                    f"{'manuelle' if item.last_price_source == 'manual' else 'genaue'} Preis bleibt erhalten."
+                ),
                 checked_at=checked_at,
             )
             return False

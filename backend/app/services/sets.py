@@ -398,7 +398,7 @@ async def _load_exact_remote_set_cards(
     card_set: CardSet,
     expected_card_count: int,
 ) -> tuple[list[dict], str, int, int]:
-    direct_remote_cards = await provider.fetch_cards_for_set(card_set.name, tcgplayer_data=True)
+    direct_remote_cards = await provider.fetch_cards_for_set(card_set.name)
     direct_exact_cards = _dedupe_remote_cards(
         [remote_card for remote_card in direct_remote_cards if _select_matching_remote_prints(remote_card, card_set)]
     )

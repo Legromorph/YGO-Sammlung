@@ -47,7 +47,7 @@ class CardManagementTests(unittest.TestCase):
 
 
 class CardLookupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_autofill_requests_print_specific_tcgplayer_data(self) -> None:
+    async def test_autofill_looks_up_the_card_in_the_preferred_language(self) -> None:
         provider = SimpleNamespace(
             fetch_card=AsyncMock(return_value={"external_id": "95365081"}),
         )
@@ -64,12 +64,7 @@ class CardLookupTests(unittest.IsolatedAsyncioTestCase):
             name=None,
             external_id="95365081",
             language="de",
-            tcgplayer_data=True,
         )
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class CardImageUrlTests(unittest.TestCase):
@@ -80,3 +75,24 @@ class CardImageUrlTests(unittest.TestCase):
         self.assertTrue(
             (_remote_image_url({"card_images": [{"image_url_small": "https://img/x.jpg"}]}) or "").startswith("/api/assets/proxy?url=")
         )
+
+
+class YgoProDeckRequestTests(unittest.IsolatedAsyncioTestCase):
+    async def test_requests_never_send_the_rejected_tcgplayer_parameter(self) -> None:
+        from unittest.mock import patch
+
+        from app.integrations.card_data import YgoProDeckCardDataProvider
+
+        provider = YgoProDeckCardDataProvider()
+        sent_params: list[dict] = []
+
+        async def fake_request(params: dict) -> list[dict]:
+            sent_params.append(dict(params))
+            return []
+
+        with patch.object(provider, "_request", side_effect=fake_request):
+            await provider.fetch_card(external_id="89631139")
+            await provider.fetch_cards_for_set("Legend of Blue Eyes White Dragon")
+
+        self.assertTrue(sent_params)
+        self.assertTrue(all("tcgplayer_data" not in params for params in sent_params))
