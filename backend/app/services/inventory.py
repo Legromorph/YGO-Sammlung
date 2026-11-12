@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.integrations.price_values import parse_positive_price
 from app.models import CardPrint, CardSet, InventoryItem, PriceHistory, PurchaseBatch, PurchaseBatchItem, SourceMapping, StorageLocation
 from app.schemas import BulkSetImportPayload, BulkSetImportResponse
+from app.services.currency import convert_amount
 from app.services.sets import _expected_card_count, sync_card_set_cards, sync_card_sets_catalog
 from app.services.price_monitor import ensure_initial_price_monitor_state
 from app.time_utils import utc_now
@@ -42,34 +43,70 @@ def _to_float(value: Decimal | float | int | None) -> float | None:
     return float(value)
 
 
-def _allocate_display_total(display_total_price: Decimal, selected_lines: list[tuple[int, int]]) -> tuple[list[AllocationLine], Decimal | None, int]:
+def _allocate_display_total(
+    display_total_price: Decimal,
+    selected_lines: list[tuple[int, int]],
+    unit_weights: dict[int, Decimal] | None = None,
+) -> tuple[list[AllocationLine], Decimal | None, int]:
+    """Split a purchase total across lines, exact to the cent.
+
+    Without weights every card costs the same. With ``unit_weights`` (for
+    example market prices) each line gets a share proportional to
+    ``weight * quantity``. Leftover cents go to the lines with the largest
+    rounding remainder, so the line totals always add up to the total.
+    """
     total_quantity = sum(quantity for _, quantity in selected_lines)
     if total_quantity <= 0:
         return [], None, 0
 
     total_cents = int((display_total_price * 100).to_integral_value(rounding=ROUND_HALF_UP))
-    base_cents, remainder_cents = divmod(total_cents, total_quantity)
     average_unit_price = (display_total_price / Decimal(total_quantity)).quantize(FOUR_DP, rounding=ROUND_HALF_UP)
 
-    remaining_remainder = remainder_cents
-    reversed_allocations: list[AllocationLine] = []
-    for card_print_id, quantity in reversed(selected_lines):
-        extra_cents = min(quantity, remaining_remainder)
-        remaining_remainder -= extra_cents
-        line_total_cents = quantity * base_cents + extra_cents
-        line_total = (Decimal(line_total_cents) / Decimal("100")).quantize(TWO_DP, rounding=ROUND_HALF_UP)
-        unit_price = (line_total / Decimal(quantity)).quantize(FOUR_DP, rounding=ROUND_HALF_UP)
-        reversed_allocations.append(
+    weights = unit_weights or {}
+    line_weights = [weights.get(card_print_id, Decimal(1)) * quantity for card_print_id, quantity in selected_lines]
+    weight_sum = sum(line_weights, Decimal(0))
+    if weight_sum <= 0:
+        line_weights = [Decimal(quantity) for _, quantity in selected_lines]
+        weight_sum = Decimal(total_quantity)
+
+    raw_shares = [Decimal(total_cents) * weight / weight_sum for weight in line_weights]
+    line_cents = [int(share) for share in raw_shares]
+    remainder_cents = total_cents - sum(line_cents)
+    by_fraction = sorted(range(len(selected_lines)), key=lambda index: (-(raw_shares[index] - line_cents[index]), index))
+    for index in by_fraction[:remainder_cents]:
+        line_cents[index] += 1
+
+    allocations: list[AllocationLine] = []
+    for (card_print_id, quantity), cents in zip(selected_lines, line_cents):
+        line_total = (Decimal(cents) / Decimal(100)).quantize(TWO_DP, rounding=ROUND_HALF_UP)
+        allocations.append(
             AllocationLine(
                 card_print_id=card_print_id,
                 quantity=quantity,
-                unit_price=unit_price,
+                unit_price=(line_total / Decimal(quantity)).quantize(FOUR_DP, rounding=ROUND_HALF_UP),
                 line_total=line_total,
             )
         )
-
-    allocations = list(reversed(reversed_allocations))
     return allocations, average_unit_price, remainder_cents
+
+
+async def _market_value_weights(
+    market_prices: dict[int, tuple[float | None, str, str | None]],
+    *,
+    currency: str,
+) -> dict[int, Decimal]:
+    """Per-unit market prices in the purchase currency; unpriced cards get the cheapest known price."""
+    converted: dict[int, Decimal] = {}
+    for card_print_id, (price, price_currency, _source) in market_prices.items():
+        if price is None:
+            continue
+        value = await convert_amount(price, price_currency, currency)
+        if value is not None and value > 0:
+            converted[card_print_id] = Decimal(str(value))
+    if not converted:
+        return {}
+    floor_weight = min(converted.values())
+    return {card_print_id: converted.get(card_print_id, floor_weight) for card_print_id in market_prices}
 
 
 async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPayload) -> BulkSetImportResponse:
@@ -87,10 +124,11 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
     await sync_card_set_cards(db, card_set, language=requested_language)
     expected_card_count = _expected_card_count(card_set)
     loaded_card_count = int(card_set.loaded_card_count or 0)
+    set_warning = None
     if expected_card_count > 0 and loaded_card_count < expected_card_count:
-        raise ValueError(
-            f"Das Set '{card_set.name}' ist noch unvollständig geladen ({loaded_card_count}/{expected_card_count} Karten). "
-            f"{card_set.sync_warning or 'Bitte Set-Sync prüfen und danach erneut importieren.'}"
+        set_warning = (
+            f"Das Set '{card_set.name}' ist laut Katalog unvollständig geladen ({loaded_card_count}/{expected_card_count} Karten). "
+            "Die gewählten Karten wurden trotzdem gespeichert."
         )
 
     selected_quantities: dict[int, int] = {}
@@ -165,9 +203,28 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
             last_price_source or "inventory:existing",
         )
 
+    market_prices: dict[int, tuple[float | None, str, str | None]] = {}
+    for card_print_id in selected_print_ids:
+        market_price, market_currency, market_source = price_snapshot_by_print.get(card_print_id, (None, payload.currency, None))
+        if market_price is None:
+            ygoprodeck_mapping = mappings_by_print.get(card_print_id, {}).get("ygoprodeck")
+            set_price = parse_positive_price((ygoprodeck_mapping.payload or {}).get("set_price")) if ygoprodeck_mapping else None
+            if set_price is not None:
+                market_price, market_currency, market_source = set_price, "USD", "ygoprodeck:set_price"
+        market_prices[card_print_id] = (market_price, market_currency, market_source)
+
     ordered_lines = [(card_print_id, selected_quantities[card_print_id]) for card_print_id in selected_print_ids]
+    has_purchase_price = payload.display_total_price is not None and payload.display_total_price > 0
     display_total_price = _to_decimal_amount(payload.display_total_price)
-    allocations, average_unit_price, remainder_cents = _allocate_display_total(display_total_price, ordered_lines)
+    unit_weights = (
+        await _market_value_weights(market_prices, currency=payload.currency)
+        if payload.allocation_mode == "market_value"
+        else None
+    )
+    allocations, average_unit_price, remainder_cents = _allocate_display_total(display_total_price, ordered_lines, unit_weights)
+    if not has_purchase_price:
+        average_unit_price = None
+        remainder_cents = 0
     total_quantity = sum(line.quantity for line in allocations)
     total_allocated_price = sum((line.line_total for line in allocations), Decimal("0.00"))
     allocation_difference = (display_total_price - total_allocated_price).quantize(TWO_DP, rounding=ROUND_HALF_UP)
@@ -193,7 +250,8 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
             "loaded_card_count": loaded_card_count,
             "requested_language": requested_language,
             "line_count": len(allocations),
-            "display_total_price": _to_float(display_total_price),
+            "display_total_price": _to_float(display_total_price) if has_purchase_price else None,
+            "allocation_mode": payload.allocation_mode if has_purchase_price else None,
             "allocation_difference": _to_float(allocation_difference),
         },
     )
@@ -208,16 +266,7 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
         card_print = prints_by_id[allocation.card_print_id]
         mapping_bundle = mappings_by_print.get(card_print.id, {})
         cardmarket_mapping = mapping_bundle.get("cardmarket")
-        market_price, market_currency, market_source = price_snapshot_by_print.get(card_print.id, (None, payload.currency, None))
-
-        if market_price is None:
-            ygoprodeck_mapping = mapping_bundle.get("ygoprodeck")
-            if ygoprodeck_mapping and ygoprodeck_mapping.payload:
-                set_price = parse_positive_price(ygoprodeck_mapping.payload.get("set_price"))
-                if set_price is not None:
-                    market_price = set_price
-                    market_currency = "USD"
-                    market_source = "ygoprodeck:set_price"
+        market_price, market_currency, market_source = market_prices[card_print.id]
 
         initial_match_quality = "exact" if market_source == "ygoprodeck:set_price" else "high_confidence" if market_price is not None else None
         initial_note = (
@@ -232,8 +281,8 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
             purchase_batch_id=purchase_batch.id,
             condition=payload.condition,
             quantity=allocation.quantity,
-            purchase_price=allocation.unit_price,
-            allocated_purchase_total=allocation.line_total,
+            purchase_price=allocation.unit_price if has_purchase_price else None,
+            allocated_purchase_total=allocation.line_total if has_purchase_price else None,
             current_market_price=market_price,
             current_price_currency=market_currency or payload.currency,
             last_price_source=market_source,
@@ -254,7 +303,7 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
                 "inventory_item_id": inventory_item.id,
                 "card_print_id": card_print.id,
                 "quantity": allocation.quantity,
-                "allocated_purchase_price_per_unit": _to_float(allocation.unit_price),
+                "allocated_purchase_price_per_unit": _to_float(allocation.unit_price) if has_purchase_price else None,
                 "allocated_purchase_total": _to_float(allocation.line_total) or 0.0,
             }
         )
@@ -265,7 +314,7 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
                 inventory_item_id=inventory_item.id,
                 card_print_id=card_print.id,
                 quantity=allocation.quantity,
-                allocated_purchase_price_per_unit=allocation.unit_price,
+                allocated_purchase_price_per_unit=allocation.unit_price if has_purchase_price else None,
                 allocated_purchase_total=allocation.line_total,
             )
         )
@@ -312,4 +361,6 @@ async def bulk_add_inventory_from_set(db: AsyncSession, payload: BulkSetImportPa
         allocation_difference=_to_float(allocation_difference) or 0.0,
         allocation_lines=allocation_lines,
         rounding_remainder_cents=remainder_cents,
+        allocation_mode=payload.allocation_mode,
+        warning=set_warning,
     )

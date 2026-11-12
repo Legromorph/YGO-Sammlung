@@ -184,28 +184,23 @@ docker run --rm -v ygo-sammlung_card_media:/media -v "$PWD/backups:/backups:ro" 
 
 - Dashboard mit KPIs, Wertverlauf, Preisgewinnern, Preisverlierern und Review-Kandidaten
 - Kartenliste mit Filterpanel, Pagination, Preisindikatoren, Edit-/Delete-Aktionen
-- Set-Erfassung mit Set-Suche, Sammelwerten, nummern-sortierter Kartenliste, Live-Zusammenfassung und Bulk-Speichern
+- Display-/Set-Erfassung mit Schnellerfassung per Kartennummer und automatischer Kaufpreis-Verteilung
 - Karten-Detailseite mit Preisverlauf und Source-Mappings
 - CRUD fuer Lagerorte, Decklisten und Sammlungen
 - Sync-/Provider-Status für Datenquellen und Worker-Jobs
 
-## Bulk-Set-Erfassung
+## Display / Set erfassen
 
-- Die Seite `Set-Erfassung` sucht im synchronisierten YGOPRODeck-Set-Katalog und laedt die Set-Karten bei Bedarf automatisch nach.
-- Die Set-Synchronisierung trennt Kataloggroesse und lokal geladene Kartenanzahl. Unvollstaendige Sets werden nicht stillschweigend als vollstaendig behandelt, sondern mit Warnstatus markiert.
-- Die Kartenliste ist nach Kartennummer natuerlich sortiert und zeigt Bild, Name, Setnummer, Seltenheit, vorhandenen Bestand und Preishinweis.
-- Der obere Preis ist ein `Display-Gesamtpreis` fuer den gesamten Einkaufsvorgang, nicht ein Preis pro Karte.
-- Der Display-Gesamtpreis wird live auf die aktuell eingetragene Gesamtanzahl verteilt. Die Summe aller gespeicherten Zeilen bleibt dabei exakt auf den Gesamtbetrag gerundet.
-- Lagerort, Zustand, Sprache und Notiz werden als Sammelwerte auf den Einkaufsvorgang angewendet.
-- Gespeichert werden nur Karten mit Menge groesser `0`.
-- Die Bulk-Aktion laeuft transaktional ueber `POST /api/inventory/bulk-add-from-set`.
-- Jeder Bulk-Import erzeugt einen eigenen `purchase_batch` mit zugehoerigen `purchase_batch_items`, damit die Charge spaeter nachvollziehbar bleibt.
-- Die Inventarzeilen speichern sowohl den verteilten Preis pro Karte als auch den exakten Gesamtankauf der jeweiligen Zeile.
-- Als Startwert fuer Marktpreise nutzt der Bulk-Import zuerst vorhandene lokale Preis-Snapshots und faellt dann auf den YGOPRODeck-Setpreis des gewaehlten Prints zurueck.
-
-- Direkt nach erfolgreichem Bulk-Import wird automatisch ein gezielter `price_update`-Job nur fuer die neu importierten `inventory_items` und `card_prints` gestartet.
-- Die Set-Erfassungsseite pollt diesen Jobstatus und zeigt `Preisupdate laeuft` bzw. das letzte erfolgreiche Preisupdate sichtbar an.
-- Der Preisjob wird vom dedizierten Worker direkt geclaimt; er bleibt damit nicht mehr still auf `pending`, wenn der Import bereits erfolgreich gespeichert wurde.
+- Set wählen (Suche nach Name oder Code), Sprache wählen, fertig: alle Karten des Sets erscheinen nach Kartennummer sortiert.
+- **Schnellerfassung:** Kartennummer (`45`, `DE045`, `RA05-DE045`) oder Name eintippen und Enter drücken fügt eine Karte hinzu. `45 x3` fügt drei hinzu. Bei gleicher Nummer in mehreren Raritäten erscheint eine Auswahl.
+- Die Kartenliste lässt sich filtern und auf bereits erfasste Karten einschränken; Mengen lassen sich mit +/− anpassen.
+- **Kaufpreis (optional):** Der Gesamtpreis, z. B. eines Displays, wird centgenau auf die erfassten Karten verteilt, wahlweise
+  - *nach Marktwert*: teure Karten bekommen einen größeren Anteil (Karten ohne Preis zählen wie die günstigste bepreiste Karte), oder
+  - *gleichmäßig*: jede Karte bekommt denselben Anteil.
+- Die Leiste unten zeigt live Anzahl, Marktwert, Kaufpreis und Bilanz.
+- Lagerort, Zustand und Notiz gelten für alle Karten des Vorgangs. Gespeichert wird über `POST /api/inventory/bulk-add-from-set` als eigener `purchase_batch`.
+- Ist ein Set laut Katalog unvollständig geladen, gibt es nur noch eine Warnung; der Import wird nicht mehr blockiert.
+- Direkt nach dem Speichern startet ein Preis- und Bildupdate für die neuen Karten.
 
 ## Preislogik
 
@@ -238,6 +233,5 @@ docker run --rm -v ygo-sammlung_card_media:/media -v "$PWD/backups:/backups:ro" 
 - Volltextsuche mit PostgreSQL GIN/TSVector
 - Deck-Exportformate
 - Kartenanlage direkt aus Remote-Suche im UI
-- Individuelle Einzelpreise pro Karte innerhalb der Bulk-Set-Erfassung
 - Authentifizierung, Benutzer- und Rollenmodell
 - Genauere, print-spezifische Preisprovider fuer den EU-Markt

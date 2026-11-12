@@ -367,7 +367,8 @@ class BulkSetImportLinePayload(BaseModel):
 
 class BulkSetImportPayload(BaseModel):
     set_id: int
-    display_total_price: float = Field(ge=0)
+    display_total_price: float | None = Field(default=None, ge=0)
+    allocation_mode: Literal["even", "market_value"] = "market_value"
     currency: str = "EUR"
     storage_location_id: int | None = None
     condition: str = "near_mint"
@@ -426,6 +427,8 @@ class BulkSetImportResponse(BaseModel):
     allocation_difference: float = 0.0
     allocation_lines: list[BulkSetImportAllocationLine] = Field(default_factory=list)
     rounding_remainder_cents: int = 0
+    allocation_mode: str = "market_value"
+    warning: str | None = None
     price_sync_job: SyncJobResponse | None = None
     price_sync_job_error: str | None = None
 

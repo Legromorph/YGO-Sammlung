@@ -1,21 +1,24 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import AddTaskRoundedIcon from '@mui/icons-material/AddTaskRounded';
-import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded';
+import BoltRoundedIcon from '@mui/icons-material/BoltRounded';
+import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
-import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import {
   Alert,
   Autocomplete,
   Avatar,
   Box,
   Button,
-  Checkbox,
   Chip,
   CircularProgress,
-  Divider,
+  FormControlLabel,
+  IconButton,
+  InputAdornment,
   MenuItem,
   Paper,
   Stack,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -26,11 +29,15 @@ import {
   Typography,
 } from '@mui/material';
 
-import api, { getApiErrorMessage, resolveMediaUrl } from '../lib/api';
-import SyncJobLogDialog from '../components/sync-job-log-dialog';
-import { formatCurrency, formatDate } from '../lib/format';
 import { useAppSettings } from '../components/app-settings-provider';
+import { CONDITION_OPTIONS } from '../components/card-form/inventory-fields';
+import PageHeader from '../components/page-header';
+import SyncJobLogDialog from '../components/sync-job-log-dialog';
+import api, { getApiErrorMessage, resolveMediaUrl } from '../lib/api';
+import { formatCurrency, formatDate } from '../lib/format';
+import { allocatePurchaseTotal, findQuickEntryMatches, parseQuickEntry } from '../lib/set-import';
 import {
+  AllocationMode,
   BulkSetImportPayload,
   BulkSetImportResponse,
   CardSetSummary,
@@ -41,215 +48,72 @@ import {
 } from '../lib/types';
 
 type QuantityMap = Record<number, number>;
-type SelectedCardMap = Record<number, true>;
-
-type AllocationPreviewLine = {
-  card_print_id: number;
-  quantity: number;
-  allocatedPurchaseTotal: number;
-  allocatedUnitPrice: number;
-};
-
-type AllocationPreview = {
-  lines: Record<number, AllocationPreviewLine>;
-  averageUnitPrice: number | null;
-  totalAllocatedPrice: number | null;
-  remainderCents: number;
-};
-
-type SortField =
-  | 'name'
-  | 'card_number'
-  | 'rarity'
-  | 'existing_quantity'
-  | 'current_market_price'
-  | 'selectedQuantity'
-  | 'allocatedPurchaseTotal'
-  | 'allocatedUnitPrice';
-
-type SortDirection = 'asc' | 'desc';
-
-type DisplaySetCardRow = SetCardRow & {
-  selectedQuantity: number;
-  allocatedPurchaseTotal: number | null;
-  allocatedUnitPrice: number | null;
-};
-
-function normalizeQuantity(value: string): number {
-  const nextValue = Number.parseInt(value, 10);
-  if (Number.isNaN(nextValue) || nextValue < 0) {
-    return 0;
-  }
-  return nextValue;
-}
+type SortField = 'card_number' | 'name' | 'current_market_price' | 'quantity';
 
 function parseMoney(value: string): number | null {
-  if (!value.trim()) {
+  const normalized = value.trim().replace(',', '.');
+  if (!normalized) {
     return null;
   }
-  const parsed = Number(value);
-  if (Number.isNaN(parsed) || parsed < 0) {
-    return null;
-  }
-  return parsed;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function allocateDisplayTotal(displayTotalPrice: number | null, rows: Array<{ card_print_id: number; quantity: number }>): AllocationPreview {
-  if (displayTotalPrice === null || !rows.length) {
-    return {
-      lines: {},
-      averageUnitPrice: null,
-      totalAllocatedPrice: null,
-      remainderCents: 0,
-    };
-  }
-
-  const totalQuantity = rows.reduce((sum, row) => sum + row.quantity, 0);
-  if (totalQuantity <= 0) {
-    return {
-      lines: {},
-      averageUnitPrice: null,
-      totalAllocatedPrice: null,
-      remainderCents: 0,
-    };
-  }
-
-  const totalCents = Math.round(displayTotalPrice * 100);
-  const baseCents = Math.floor(totalCents / totalQuantity);
-  let remainderCents = totalCents % totalQuantity;
-  const averageUnitPrice = Number((displayTotalPrice / totalQuantity).toFixed(4));
-
-  const reversedAllocations = [...rows].reverse().map((row) => {
-    const extraCents = Math.min(row.quantity, remainderCents);
-    remainderCents -= extraCents;
-    const lineTotalCents = row.quantity * baseCents + extraCents;
-    const allocatedPurchaseTotal = lineTotalCents / 100;
-    const allocatedUnitPrice = Number((allocatedPurchaseTotal / row.quantity).toFixed(4));
-    return {
-      card_print_id: row.card_print_id,
-      quantity: row.quantity,
-      allocatedPurchaseTotal,
-      allocatedUnitPrice,
-    };
-  });
-
-  const lines = Object.fromEntries(
-    reversedAllocations.reverse().map((line) => [
-      line.card_print_id,
-      {
-        card_print_id: line.card_print_id,
-        quantity: line.quantity,
-        allocatedPurchaseTotal: line.allocatedPurchaseTotal,
-        allocatedUnitPrice: line.allocatedUnitPrice,
-      },
-    ]),
-  );
-
-  return {
-    lines,
-    averageUnitPrice,
-    totalAllocatedPrice: totalCents / 100,
-    remainderCents: totalCents % totalQuantity,
-  };
-}
-
-function compareNullableNumbers(left: number | null | undefined, right: number | null | undefined): number {
-  const normalizedLeft = left ?? Number.NEGATIVE_INFINITY;
-  const normalizedRight = right ?? Number.NEGATIVE_INFINITY;
-  return normalizedLeft - normalizedRight;
-}
-
-function compareNullableText(left: string | null | undefined, right: string | null | undefined): number {
+function compareText(left?: string | null, right?: string | null): number {
   return (left || '').localeCompare(right || '', undefined, { numeric: true, sensitivity: 'base' });
-}
-
-function compareCardRows(left: DisplaySetCardRow, right: DisplaySetCardRow, field: SortField): number {
-  switch (field) {
-    case 'name':
-      return compareNullableText(left.name, right.name);
-    case 'card_number':
-      return compareNullableText(left.card_number, right.card_number);
-    case 'rarity':
-      return compareNullableText(left.rarity, right.rarity);
-    case 'existing_quantity':
-      return left.existing_quantity - right.existing_quantity;
-    case 'current_market_price':
-      return compareNullableNumbers(left.current_market_price, right.current_market_price);
-    case 'selectedQuantity':
-      return left.selectedQuantity - right.selectedQuantity;
-    case 'allocatedPurchaseTotal':
-      return compareNullableNumbers(left.allocatedPurchaseTotal, right.allocatedPurchaseTotal);
-    case 'allocatedUnitPrice':
-      return compareNullableNumbers(left.allocatedUnitPrice, right.allocatedUnitPrice);
-    default:
-      return 0;
-  }
 }
 
 export default function SetImportPage() {
   const { settings } = useAppSettings();
+  const currency = settings.preferred_currency || 'EUR';
+  const quickEntryRef = useRef<HTMLInputElement | null>(null);
+
   const [setOptions, setSetOptions] = useState<CardSetSummary[]>([]);
   const [setSearch, setSetSearch] = useState('');
   const [selectedSet, setSelectedSet] = useState<CardSetSummary | null>(null);
   const [setCards, setSetCards] = useState<SetCardRow[]>([]);
   const [quantities, setQuantities] = useState<QuantityMap>({});
-  const [selectedCards, setSelectedCards] = useState<SelectedCardMap>({});
   const [storageLocations, setStorageLocations] = useState<StorageLocation[]>([]);
-  const [displayTotalPrice, setDisplayTotalPrice] = useState('');
+  const [purchasePrice, setPurchasePrice] = useState('');
+  const [allocationMode, setAllocationMode] = useState<AllocationMode>('market_value');
   const [storageLocationId, setStorageLocationId] = useState('');
   const [condition, setCondition] = useState('near_mint');
   const [language, setLanguage] = useState(settings.preferred_card_language || 'de');
-  const [displayCurrency, setDisplayCurrency] = useState(settings.preferred_currency || 'EUR');
   const [notes, setNotes] = useState('');
+  const [quickEntry, setQuickEntry] = useState('');
+  const [quickEntryCandidates, setQuickEntryCandidates] = useState<SetCardRow[]>([]);
+  const [lastAdded, setLastAdded] = useState<{ row: SetCardRow; quantity: number } | null>(null);
+  const [filterText, setFilterText] = useState('');
+  const [onlySelected, setOnlySelected] = useState(false);
+  const [sortField, setSortField] = useState<SortField>('card_number');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [loadingSets, setLoadingSets] = useState(false);
   const [loadingCards, setLoadingCards] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [sortField, setSortField] = useState<SortField>('card_number');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [priceSyncJob, setPriceSyncJob] = useState<SyncJob | null>(null);
   const [logJob, setLogJob] = useState<SyncJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   useEffect(() => {
-    let active = true;
-    const loadStorageLocations = async () => {
-      try {
-        const response = await api.get<StorageLocation[]>('/storage-locations/');
-        if (active) {
-          setStorageLocations(response.data);
-        }
-      } catch (requestError) {
-        if (active) {
-          setError(getApiErrorMessage(requestError));
-        }
-      }
-    };
-
-    void loadStorageLocations();
-    return () => {
-      active = false;
-    };
+    api
+      .get<StorageLocation[]>('/storage-locations/')
+      .then((response) => setStorageLocations(response.data))
+      .catch((requestError) => setError(getApiErrorMessage(requestError)));
   }, []);
 
   useEffect(() => {
-    setDisplayCurrency(settings.preferred_currency || 'EUR');
-    if (!selectedSet && setCards.length === 0) {
+    if (!selectedSet) {
       setLanguage(settings.preferred_card_language || 'de');
     }
-  }, [selectedSet, setCards.length, settings.preferred_card_language, settings.preferred_currency]);
+  }, [selectedSet, settings.preferred_card_language]);
 
   useEffect(() => {
     let active = true;
     const handle = window.setTimeout(async () => {
       setLoadingSets(true);
       try {
-        const response = await api.get<CardSetSummary[]>('/sets/', {
-          params: {
-            q: setSearch.trim() || undefined,
-            limit: 24,
-          },
-        });
+        const response = await api.get<CardSetSummary[]>('/sets/', { params: { q: setSearch.trim() || undefined, limit: 24 } });
         if (active) {
           setSetOptions(response.data);
         }
@@ -263,29 +127,27 @@ export default function SetImportPage() {
         }
       }
     }, 250);
-
     return () => {
       active = false;
       window.clearTimeout(handle);
     };
   }, [setSearch]);
 
-  const loadSetCards = async (setId: number, languageOverride = language) => {
+  const loadSetCards = async (setId: number, languageOverride = language, { keepQuantities = false } = {}) => {
     setLoadingCards(true);
-    setSuccess(null);
     try {
-      const response = await api.get<SetCardsResponse>(`/sets/${setId}/cards`, {
-        params: { language: languageOverride },
-      });
+      const response = await api.get<SetCardsResponse>(`/sets/${setId}/cards`, { params: { language: languageOverride } });
       setSelectedSet(response.data.set);
       setSetCards(response.data.items);
-      setQuantities({});
-      setSelectedCards({});
+      if (!keepQuantities) {
+        setQuantities({});
+        setLastAdded(null);
+      }
       setError(null);
+      window.setTimeout(() => quickEntryRef.current?.focus(), 0);
     } catch (requestError) {
       setSetCards([]);
       setQuantities({});
-      setSelectedCards({});
       setError(getApiErrorMessage(requestError));
     } finally {
       setLoadingCards(false);
@@ -296,7 +158,6 @@ export default function SetImportPage() {
     if (!priceSyncJob || !['pending', 'running'].includes(priceSyncJob.status)) {
       return;
     }
-
     let active = true;
     const interval = window.setInterval(async () => {
       try {
@@ -306,7 +167,7 @@ export default function SetImportPage() {
         }
         setPriceSyncJob(response.data);
         if (response.data.status === 'completed' && selectedSet) {
-          await loadSetCards(selectedSet.id);
+          await loadSetCards(selectedSet.id, language, { keepQuantities: true });
         }
       } catch (requestError) {
         if (active) {
@@ -314,212 +175,130 @@ export default function SetImportPage() {
         }
       }
     }, 2500);
-
     return () => {
       active = false;
       window.clearInterval(interval);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [priceSyncJob, selectedSet]);
 
-  const parsedDisplayTotalPrice = parseMoney(displayTotalPrice);
-  const cardsWithQuantities = useMemo<DisplaySetCardRow[]>(
-    () =>
-      setCards.map((card) => ({
-        ...card,
-        selectedQuantity: quantities[card.card_print_id] || 0,
-        allocatedPurchaseTotal: null,
-        allocatedUnitPrice: null,
-      })),
-    [quantities, setCards],
-  );
-
-  const selectedRows = useMemo(
-    () => cardsWithQuantities.filter((card) => card.selectedQuantity > 0),
-    [cardsWithQuantities],
-  );
-
-  const selectedLineCount = selectedRows.length;
-  const selectedQuantityTotal = selectedRows.reduce((sum, card) => sum + card.selectedQuantity, 0);
-  const allocationPreview = useMemo(
-    () =>
-      allocateDisplayTotal(
-        parsedDisplayTotalPrice,
-        selectedRows.map((card) => ({
-          card_print_id: card.card_print_id,
-          quantity: card.selectedQuantity,
-        })),
-      ),
-    [parsedDisplayTotalPrice, selectedRows],
-  );
-  const sortedSetCards = useMemo<DisplaySetCardRow[]>(() => {
-    const rows = cardsWithQuantities.map((card) => {
-      const allocationLine = allocationPreview.lines[card.card_print_id];
-      return {
-        ...card,
-        allocatedPurchaseTotal: allocationLine?.allocatedPurchaseTotal ?? null,
-        allocatedUnitPrice: allocationLine?.allocatedUnitPrice ?? null,
-      };
-    });
-
-    return [...rows].sort((left, right) => {
-      const primary = compareCardRows(left, right, sortField);
-      if (primary !== 0) {
-        return sortDirection === 'asc' ? primary : -primary;
-      }
-
-      const fallbackByNumber = compareNullableText(left.card_number, right.card_number);
-      if (fallbackByNumber !== 0) {
-        return fallbackByNumber;
-      }
-
-      return compareNullableText(left.name, right.name);
-    });
-  }, [allocationPreview.lines, cardsWithQuantities, sortDirection, sortField]);
-
-  const marketCurrencies = Array.from(
-    new Set(selectedRows.map((card) => card.current_price_currency).filter((currency): currency is string => Boolean(currency))),
-  );
-  const estimatedMarketTotal = selectedRows.reduce((sum, card) => sum + (card.current_market_price || 0) * card.selectedQuantity, 0);
-  const allocationDifference = parsedDisplayTotalPrice !== null && allocationPreview.totalAllocatedPrice !== null
-    ? Number((parsedDisplayTotalPrice - allocationPreview.totalAllocatedPrice).toFixed(2))
-    : null;
-  const isImportBlocked = Boolean(selectedSet && !selectedSet.is_complete);
-  const selectedCardIds = useMemo(
-    () => Object.keys(selectedCards).map((value) => Number(value)).filter((value) => Number.isFinite(value)),
-    [selectedCards],
-  );
-  const selectedCardCount = selectedCardIds.length;
-  const allVisibleCardIds = useMemo(() => sortedSetCards.map((card) => card.card_print_id), [sortedSetCards]);
-  const allVisibleSelected = allVisibleCardIds.length > 0 && allVisibleCardIds.every((cardPrintId) => Boolean(selectedCards[cardPrintId]));
-  const partiallyVisibleSelected = !allVisibleSelected && allVisibleCardIds.some((cardPrintId) => Boolean(selectedCards[cardPrintId]));
-
-  const handleQuantityChange = (cardPrintId: number, nextQuantity: number) => {
+  const changeQuantity = (cardPrintId: number, nextQuantity: number) => {
     setSuccess(null);
     setQuantities((current) => {
+      const next = { ...current };
       if (nextQuantity <= 0) {
-        const nextState = { ...current };
-        delete nextState[cardPrintId];
-        return nextState;
+        delete next[cardPrintId];
+      } else {
+        next[cardPrintId] = nextQuantity;
       }
-      return { ...current, [cardPrintId]: nextQuantity };
+      return next;
     });
   };
 
-  const handleSortChange = (field: SortField) => {
-    setSortDirection((currentDirection) => {
-      if (sortField === field) {
-        return currentDirection === 'asc' ? 'desc' : 'asc';
+  const addCard = (row: SetCardRow, amount: number) => {
+    changeQuantity(row.card_print_id, (quantities[row.card_print_id] || 0) + amount);
+    setLastAdded({ row, quantity: (quantities[row.card_print_id] || 0) + amount });
+    setQuickEntry('');
+    setQuickEntryCandidates([]);
+    quickEntryRef.current?.focus();
+  };
+
+  const submitQuickEntry = () => {
+    const { term, quantity } = parseQuickEntry(quickEntry);
+    const matches = findQuickEntryMatches(setCards, term);
+    if (matches.length === 1) {
+      addCard(matches[0], quantity);
+      return;
+    }
+    setQuickEntryCandidates(matches.slice(0, 8));
+    if (!matches.length) {
+      setLastAdded(null);
+    }
+  };
+
+  const purchaseTotal = parseMoney(purchasePrice);
+  const selectedRows = useMemo(() => setCards.filter((card) => (quantities[card.card_print_id] || 0) > 0), [quantities, setCards]);
+  const allocation = useMemo(
+    () =>
+      allocatePurchaseTotal(
+        purchaseTotal,
+        selectedRows.map((card) => ({
+          card_print_id: card.card_print_id,
+          quantity: quantities[card.card_print_id],
+          market_price: card.current_market_price,
+        })),
+        allocationMode,
+      ),
+    [allocationMode, purchaseTotal, quantities, selectedRows],
+  );
+  const totalQuantity = selectedRows.reduce((sum, card) => sum + quantities[card.card_print_id], 0);
+  const marketTotal = selectedRows.reduce((sum, card) => sum + (card.current_market_price || 0) * quantities[card.card_print_id], 0);
+  const unpricedCount = selectedRows.filter((card) => !card.current_market_price).length;
+  const balance = purchaseTotal !== null ? marketTotal - purchaseTotal : null;
+
+  const visibleRows = useMemo(() => {
+    const normalizedFilter = filterText.trim().toLowerCase();
+    const rows = setCards.filter((card) => {
+      if (onlySelected && !quantities[card.card_print_id]) {
+        return false;
       }
-      return 'asc';
+      if (!normalizedFilter) {
+        return true;
+      }
+      return [card.name, card.card_number, card.set_code, card.rarity].some((value) => (value || '').toLowerCase().includes(normalizedFilter));
     });
+    const direction = sortDirection === 'asc' ? 1 : -1;
+    return [...rows].sort((left, right) => {
+      let result = 0;
+      if (sortField === 'name') {
+        result = compareText(left.name, right.name);
+      } else if (sortField === 'current_market_price') {
+        result = (left.current_market_price ?? -1) - (right.current_market_price ?? -1);
+      } else if (sortField === 'quantity') {
+        result = (quantities[left.card_print_id] || 0) - (quantities[right.card_print_id] || 0);
+      }
+      return result * direction || compareText(left.card_number, right.card_number) || compareText(left.rarity, right.rarity);
+    });
+  }, [filterText, onlySelected, quantities, setCards, sortDirection, sortField]);
+
+  const toggleSort = (field: SortField) => {
+    setSortDirection((current) => (sortField === field && current === 'asc' ? 'desc' : 'asc'));
     setSortField(field);
   };
 
-  const toggleCardSelection = (cardPrintId: number) => {
-    setSelectedCards((current) => {
-      if (current[cardPrintId]) {
-        const nextState = { ...current };
-        delete nextState[cardPrintId];
-        return nextState;
-      }
-      return { ...current, [cardPrintId]: true };
-    });
-  };
-
-  const handleSelectAllVisible = (checked: boolean) => {
-    setSelectedCards((current) => {
-      if (!checked) {
-        const nextState = { ...current };
-        for (const cardPrintId of allVisibleCardIds) {
-          delete nextState[cardPrintId];
-        }
-        return nextState;
-      }
-
-      const nextState = { ...current };
-      for (const cardPrintId of allVisibleCardIds) {
-        nextState[cardPrintId] = true;
-      }
-      return nextState;
-    });
-  };
-
-  const applyBulkQuantityDelta = (delta: number) => {
-    if (!selectedCardIds.length || delta === 0) {
-      return;
-    }
-
-    setSuccess(null);
-    setQuantities((current) => {
-      const nextState = { ...current };
-      for (const cardPrintId of selectedCardIds) {
-        const nextQuantity = Math.max(0, (nextState[cardPrintId] || 0) + delta);
-        if (nextQuantity <= 0) {
-          delete nextState[cardPrintId];
-        } else {
-          nextState[cardPrintId] = nextQuantity;
-        }
-      }
-      return nextState;
-    });
-  };
-
-  const clearSelectedCardQuantities = () => {
-    if (!selectedCardIds.length) {
-      return;
-    }
-
-    setSuccess(null);
-    setQuantities((current) => {
-      const nextState = { ...current };
-      for (const cardPrintId of selectedCardIds) {
-        delete nextState[cardPrintId];
-      }
-      return nextState;
-    });
-  };
-
-  const clearCardSelection = () => {
-    setSelectedCards({});
-  };
-
   const handleSave = async () => {
-    if (!selectedSet || !selectedRows.length || parsedDisplayTotalPrice === null) {
+    if (!selectedSet || !selectedRows.length) {
       return;
     }
-
     setSaving(true);
     setSuccess(null);
+    setError(null);
     try {
       const payload: BulkSetImportPayload = {
         set_id: selectedSet.id,
-        display_total_price: parsedDisplayTotalPrice,
-        currency: displayCurrency,
+        display_total_price: purchaseTotal,
+        allocation_mode: allocationMode,
+        currency,
         storage_location_id: storageLocationId ? Number(storageLocationId) : null,
         condition,
         language,
         notes: notes.trim() || null,
-        items: selectedRows.map((card) => ({
-          card_print_id: card.card_print_id,
-          quantity: card.selectedQuantity,
-        })),
+        items: selectedRows.map((card) => ({ card_print_id: card.card_print_id, quantity: quantities[card.card_print_id] })),
       };
       const response = await api.post<BulkSetImportResponse>('/inventory/bulk-add-from-set', payload);
       setPriceSyncJob(response.data.price_sync_job || null);
       setSuccess(
-        `Batch #${response.data.purchase_batch_id} gespeichert: ${response.data.total_quantity} Karten, ${formatCurrency(
-          response.data.total_allocated_price,
-          response.data.currency,
-        )} verteilt, durchschnittlich ${formatCurrency(response.data.allocated_unit_price, response.data.currency)} pro Karte, Rundungsdifferenz ${formatCurrency(
-          response.data.allocation_difference,
-          response.data.currency,
-        )}.${
-          response.data.price_sync_job ? ` Preisjob #${response.data.price_sync_job.id} wurde direkt gestartet.` : ''
-        }`,
+        `${response.data.total_quantity} Karten gespeichert${
+          purchaseTotal !== null ? ` · Kaufpreis ${formatCurrency(response.data.total_allocated_price, response.data.currency)} verteilt` : ''
+        }. Die Preise werden jetzt aktualisiert.`,
       );
-      if (response.data.price_sync_job_error) {
+      if (response.data.warning) {
+        setError(response.data.warning);
+      } else if (response.data.price_sync_job_error) {
         setError(response.data.price_sync_job_error);
       }
+      setPurchasePrice('');
+      setNotes('');
       await loadSetCards(selectedSet.id);
     } catch (requestError) {
       setError(getApiErrorMessage(requestError));
@@ -528,61 +307,52 @@ export default function SetImportPage() {
     }
   };
 
-  return (
-    <Stack spacing={3}>
-      <Paper
-        sx={{
-          p: 3,
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: 2,
-          flexWrap: 'wrap',
-          background: 'linear-gradient(135deg, rgba(216,169,76,0.12), rgba(78,162,138,0.08))',
-        }}
-      >
-        <Box>
-          <Typography variant="h4">Set-Erfassung</Typography>
-          <Typography color="text.secondary" sx={{ mt: 0.75, maxWidth: 900 }}>
-            Die Setliste lädt komplette Sets über den kanonischen Provider-Import und verteilt den Display-Gesamtpreis automatisch auf alle
-            aktuell eingetragenen Karten.
-          </Typography>
-        </Box>
-        <Chip icon={<AutoAwesomeRoundedIcon />} label="Kompletter Set-Import mit Batch-Kostenbasis" color="secondary" variant="outlined" />
-      </Paper>
+  const sortHeader = (field: SortField, label: string, align: 'left' | 'right' = 'left') => (
+    <TableCell align={align} sortDirection={sortField === field ? sortDirection : false}>
+      <TableSortLabel active={sortField === field} direction={sortField === field ? sortDirection : 'asc'} onClick={() => toggleSort(field)}>
+        {label}
+      </TableSortLabel>
+    </TableCell>
+  );
 
-      {error ? <Alert severity="error" onClose={() => setError(null)}>{error}</Alert> : null}
-      {success ? <Alert severity="success" onClose={() => setSuccess(null)}>{success}</Alert> : null}
+  return (
+    <Stack spacing={2.5} sx={{ pb: 12 }}>
+      <PageHeader
+        title="Display / Set erfassen"
+        description="Set wählen, gezogene Karten eintippen, fertig. Ein Kaufpreis (z. B. für ein Display) wird automatisch auf die Karten verteilt."
+      />
+
+      {error ? (
+        <Alert severity="error" onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      ) : null}
+      {success ? (
+        <Alert severity="success" onClose={() => setSuccess(null)}>
+          {success}
+        </Alert>
+      ) : null}
       {priceSyncJob ? (
         <Alert
           severity={priceSyncJob.status === 'failed' ? 'error' : priceSyncJob.status === 'completed' ? 'success' : 'info'}
           onClose={() => setPriceSyncJob(null)}
           action={
             <Button color="inherit" size="small" onClick={() => setLogJob(priceSyncJob)}>
-              Mehr anzeigen
+              Details
             </Button>
           }
         >
           {priceSyncJob.status === 'completed'
-            ? `Preisupdate abgeschlossen. Letztes Preisupdate: ${formatDate(priceSyncJob.completed_at || priceSyncJob.created_at)}.`
+            ? `Preise aktualisiert (${formatDate(priceSyncJob.completed_at || priceSyncJob.created_at)}).`
             : priceSyncJob.status === 'failed'
-              ? `Preisupdate fehlgeschlagen: ${priceSyncJob.error_message || 'Unbekannter Fehler'}.`
-              : `Preisupdate läuft für die importierten Karten. Job #${priceSyncJob.id} wurde am ${formatDate(
-                  priceSyncJob.created_at,
-                )} gestartet.`}
+              ? `Preisupdate fehlgeschlagen: ${priceSyncJob.error_message || 'Unbekannter Fehler'}`
+              : 'Preise der neuen Karten werden abgefragt…'}
         </Alert>
       ) : null}
       <SyncJobLogDialog open={Boolean(logJob)} job={logJob} onClose={() => setLogJob(null)} />
 
-      <Paper sx={{ p: 3 }}>
-        <Stack spacing={2.5}>
-          <Box>
-            <Typography variant="h6">1. Set auswählen</Typography>
-            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              Suche nach Setname oder Setcode. Die Treffer zeigen direkt, wie viele Karten laut Katalog erwartet und aktuell lokal geladen sind.
-            </Typography>
-          </Box>
-
+      <Paper sx={{ p: { xs: 2, sm: 3 } }}>
+        <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', md: '2.2fr 1fr 1fr 1.2fr' } }}>
           <Autocomplete<CardSetSummary, false, false, false>
             options={setOptions}
             value={selectedSet}
@@ -590,7 +360,7 @@ export default function SetImportPage() {
             loading={loadingSets}
             filterOptions={(options) => options}
             noOptionsText="Keine Sets gefunden"
-            loadingText="Lade Sets..."
+            loadingText="Lade Sets…"
             onInputChange={(_, value) => setSetSearch(value)}
             onChange={(_, value) => {
               setSelectedSet(value);
@@ -600,20 +370,16 @@ export default function SetImportPage() {
               } else {
                 setSetCards([]);
                 setQuantities({});
-                setSelectedCards({});
               }
             }}
             isOptionEqualToValue={(option, value) => option.id === value.id}
             getOptionLabel={(option) => (option.set_code ? `${option.name} (${option.set_code})` : option.name)}
             renderOption={(props, option) => (
-              <Box component="li" {...props} sx={{ alignItems: 'flex-start', gap: 1.25 }}>
-                <SearchRoundedIcon sx={{ color: 'primary.light', mt: 0.35 }} />
+              <Box component="li" {...props} key={option.id}>
                 <Box>
                   <Typography fontWeight={700}>{option.name}</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    {[option.set_code, `${option.loaded_card_count}/${option.expected_card_count || option.card_count} Karten`, option.release_date || null]
-                      .filter(Boolean)
-                      .join(' | ')}
+                    {[option.set_code, `${option.expected_card_count || option.card_count} Karten`, option.release_date].filter(Boolean).join(' · ')}
                   </Typography>
                 </Box>
               </Box>
@@ -621,8 +387,8 @@ export default function SetImportPage() {
             renderInput={(params) => (
               <TextField
                 {...params}
-                label="Set suchen"
-                placeholder="z. B. Burst Protocol oder BPRO"
+                label="1. Set"
+                placeholder="Name oder Code, z. B. Rarity Collection oder RA05"
                 InputProps={{
                   ...params.InputProps,
                   endAdornment: (
@@ -635,429 +401,308 @@ export default function SetImportPage() {
               />
             )}
           />
-
-          {selectedSet ? (
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              <Chip label={selectedSet.name} color="primary" variant="outlined" />
-              {selectedSet.set_code ? <Chip label={selectedSet.set_code} variant="outlined" /> : null}
-              <Chip
-                label={`${selectedSet.loaded_card_count}/${selectedSet.expected_card_count || selectedSet.card_count} Karten`}
-                color={selectedSet.is_complete ? 'success' : 'warning'}
-                variant="outlined"
-              />
-              <Chip label={`${selectedSet.loaded_print_count} Prints`} variant="outlined" />
-            </Stack>
-          ) : null}
-        </Stack>
-      </Paper>
-
-      <Paper sx={{ p: 3 }}>
-        <Stack spacing={2.5}>
-          <Box>
-            <Typography variant="h6">2. Einkaufsvorgang festlegen</Typography>
-            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              Der eingegebene Betrag ist der Gesamtpreis des Displays oder Einkaufs und wird dynamisch auf die aktuell eingetragene Gesamtanzahl
-              verteilt.
-            </Typography>
-          </Box>
-
-          <Box sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr', md: '1.15fr 1fr 1fr 1fr' } }}>
-            <TextField
-              label="Display-Gesamtpreis"
-              type="number"
-              value={displayTotalPrice}
-              onChange={(event) => {
-                setSuccess(null);
-                setDisplayTotalPrice(event.target.value);
-              }}
-              inputProps={{ min: 0, step: '0.01' }}
-              helperText="Dieser Betrag wird automatisch auf die aktuell eingetragene Gesamtanzahl verteilt."
-            />
-            <TextField
-              select
-              label="Lagerort"
-              value={storageLocationId}
-              onChange={(event) => {
-                setSuccess(null);
-                setStorageLocationId(event.target.value);
-              }}
-            >
-              <MenuItem value="">Nicht zugewiesen</MenuItem>
-              {storageLocations.map((location) => (
-                <MenuItem key={location.id} value={location.id}>
-                  {location.path_cache}
-                </MenuItem>
-              ))}
-            </TextField>
-            <TextField
-              select
-              label="Zustand"
-              value={condition}
-              onChange={(event) => {
-                setSuccess(null);
-                setCondition(event.target.value);
-              }}
-            >
-              <MenuItem value="near_mint">Near Mint</MenuItem>
-              <MenuItem value="excellent">Excellent</MenuItem>
-              <MenuItem value="good">Good</MenuItem>
-              <MenuItem value="played">Played</MenuItem>
-              <MenuItem value="poor">Poor</MenuItem>
-            </TextField>
-            <TextField
-              select
-              label="Sprache des Einkaufs"
-              value={language}
-              onChange={(event) => {
-                setSuccess(null);
-                const nextLanguage = event.target.value;
-                setLanguage(nextLanguage);
-                if (selectedSet) {
-                  void loadSetCards(selectedSet.id, nextLanguage);
-                }
-              }}
-            >
-              <MenuItem value="de">Deutsch</MenuItem>
-              <MenuItem value="en">Englisch</MenuItem>
-              <MenuItem value="jp">Japanisch</MenuItem>
-            </TextField>
-          </Box>
-
           <TextField
-            label="Notiz für den Einkaufsvorgang"
-            value={notes}
+            select
+            label="Sprache"
+            value={language}
             onChange={(event) => {
-              setSuccess(null);
-              setNotes(event.target.value);
-            }}
-            multiline
-            minRows={2}
-            placeholder="Optional, z. B. Displaykauf 04/2026 oder Messeankauf."
-          />
-        </Stack>
-      </Paper>
-
-      {selectedSet?.warning ? (
-        <Alert severity={selectedSet.is_complete ? 'warning' : 'error'} icon={<WarningAmberRoundedIcon />}>
-          {selectedSet.warning}
-        </Alert>
-      ) : null}
-      {isImportBlocked ? (
-        <Alert severity="error" icon={<WarningAmberRoundedIcon />}>
-          Der Import ist gesperrt, bis das Set vollständig validiert wurde. Bitte zuerst die Set-Zuordnung bzw. den Sync korrigieren.
-        </Alert>
-      ) : null}
-
-      <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', xl: '2.25fr 1fr' }, alignItems: 'start' }}>
-        <Paper sx={{ overflow: 'hidden' }}>
-          <Box sx={{ p: 3, pb: 2 }}>
-            <Typography variant="h6">3. Kartenliste des Sets</Typography>
-            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              Die Tabelle ist pro Spalte sortierbar. Pro Zeile siehst du live die verteilte Kostenbasis für genau diese Kartenmenge.
-            </Typography>
-          </Box>
-          <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
-
-          {!selectedSet ? (
-            <Box sx={{ p: 4.5, textAlign: 'center' }}>
-              <Typography variant="h6">Noch kein Set ausgewählt</Typography>
-              <Typography color="text.secondary" sx={{ mt: 0.75 }}>
-                Wähle oben ein Set aus, dann werden alle zugehörigen Karten geladen.
-              </Typography>
-            </Box>
-          ) : loadingCards ? (
-            <Box sx={{ p: 5, display: 'grid', placeItems: 'center' }}>
-              <CircularProgress />
-            </Box>
-          ) : (
-            <Box>
-              <Stack
-                direction={{ xs: 'column', md: 'row' }}
-                justifyContent="space-between"
-                alignItems={{ xs: 'stretch', md: 'center' }}
-                spacing={1.5}
-                sx={{ px: 3, py: 2 }}
-              >
-                <Typography color="text.secondary">
-                  {selectedCardCount > 0
-                    ? `${selectedCardCount} Karten markiert. Mengen lassen sich gesammelt anpassen.`
-                    : 'Mehrfachauswahl aktiv: markiere Karten, um ihre Mengen gesammelt zu erhöhen.'}
-                </Typography>
-                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                  <Button size="small" variant="outlined" onClick={() => applyBulkQuantityDelta(1)} disabled={!selectedCardCount}>
-                    +1 für Auswahl
-                  </Button>
-                  <Button size="small" variant="outlined" onClick={() => applyBulkQuantityDelta(5)} disabled={!selectedCardCount}>
-                    +5 für Auswahl
-                  </Button>
-                  <Button size="small" color="inherit" onClick={clearSelectedCardQuantities} disabled={!selectedCardCount}>
-                    Mengen leeren
-                  </Button>
-                  <Button size="small" color="inherit" onClick={clearCardSelection} disabled={!selectedCardCount}>
-                    Auswahl lösen
-                  </Button>
-                </Stack>
-              </Stack>
-              <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)' }} />
-              <Box sx={{ maxHeight: '68vh', overflow: 'auto' }}>
-                <Table stickyHeader size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell padding="checkbox">
-                        <Checkbox
-                          checked={allVisibleSelected}
-                          indeterminate={partiallyVisibleSelected}
-                          onChange={(event) => handleSelectAllVisible(event.target.checked)}
-                          inputProps={{ 'aria-label': 'Alle sichtbaren Karten auswählen' }}
-                        />
-                      </TableCell>
-                      <TableCell sortDirection={sortField === 'name' ? sortDirection : false}>
-                        <TableSortLabel
-                          active={sortField === 'name'}
-                          direction={sortField === 'name' ? sortDirection : 'asc'}
-                          onClick={() => handleSortChange('name')}
-                        >
-                          Karte
-                        </TableSortLabel>
-                      </TableCell>
-                      <TableCell sortDirection={sortField === 'card_number' ? sortDirection : false}>
-                        <TableSortLabel
-                          active={sortField === 'card_number'}
-                          direction={sortField === 'card_number' ? sortDirection : 'asc'}
-                          onClick={() => handleSortChange('card_number')}
-                        >
-                          Nr.
-                        </TableSortLabel>
-                      </TableCell>
-                      <TableCell sortDirection={sortField === 'rarity' ? sortDirection : false}>
-                        <TableSortLabel
-                          active={sortField === 'rarity'}
-                          direction={sortField === 'rarity' ? sortDirection : 'asc'}
-                          onClick={() => handleSortChange('rarity')}
-                        >
-                          Seltenheit
-                        </TableSortLabel>
-                      </TableCell>
-                      <TableCell align="right" sortDirection={sortField === 'existing_quantity' ? sortDirection : false}>
-                        <TableSortLabel
-                          active={sortField === 'existing_quantity'}
-                          direction={sortField === 'existing_quantity' ? sortDirection : 'asc'}
-                          onClick={() => handleSortChange('existing_quantity')}
-                        >
-                          Bestand
-                        </TableSortLabel>
-                      </TableCell>
-                      <TableCell align="right" sortDirection={sortField === 'current_market_price' ? sortDirection : false}>
-                        <TableSortLabel
-                          active={sortField === 'current_market_price'}
-                          direction={sortField === 'current_market_price' ? sortDirection : 'asc'}
-                          onClick={() => handleSortChange('current_market_price')}
-                        >
-                          Marktpreis
-                        </TableSortLabel>
-                      </TableCell>
-                      <TableCell align="right" sortDirection={sortField === 'selectedQuantity' ? sortDirection : false}>
-                        <TableSortLabel
-                          active={sortField === 'selectedQuantity'}
-                          direction={sortField === 'selectedQuantity' ? sortDirection : 'asc'}
-                          onClick={() => handleSortChange('selectedQuantity')}
-                        >
-                          Menge
-                        </TableSortLabel>
-                      </TableCell>
-                      <TableCell align="right" sortDirection={sortField === 'allocatedPurchaseTotal' ? sortDirection : false}>
-                        <TableSortLabel
-                          active={sortField === 'allocatedPurchaseTotal'}
-                          direction={sortField === 'allocatedPurchaseTotal' ? sortDirection : 'asc'}
-                          onClick={() => handleSortChange('allocatedPurchaseTotal')}
-                        >
-                          Ankauf Zeile
-                        </TableSortLabel>
-                      </TableCell>
-                      <TableCell align="right" sortDirection={sortField === 'allocatedUnitPrice' ? sortDirection : false}>
-                        <TableSortLabel
-                          active={sortField === 'allocatedUnitPrice'}
-                          direction={sortField === 'allocatedUnitPrice' ? sortDirection : 'asc'}
-                          onClick={() => handleSortChange('allocatedUnitPrice')}
-                        >
-                          Stk. kalk.
-                        </TableSortLabel>
-                      </TableCell>
-                      <TableCell align="right">Schnell</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {sortedSetCards.map((card) => {
-                      const isSelected = Boolean(selectedCards[card.card_print_id]);
-                      return (
-                        <TableRow
-                          key={card.card_print_id}
-                          hover
-                          sx={{
-                            backgroundColor: isSelected
-                              ? 'rgba(78, 162, 138, 0.12)'
-                              : card.selectedQuantity > 0
-                                ? 'rgba(216, 169, 76, 0.08)'
-                                : undefined,
-                            transition: 'background-color 160ms ease',
-                          }}
-                        >
-                          <TableCell padding="checkbox">
-                            <Checkbox
-                              checked={isSelected}
-                              onChange={() => toggleCardSelection(card.card_print_id)}
-                              inputProps={{ 'aria-label': `${card.name} auswählen` }}
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Stack direction="row" spacing={1.5} alignItems="center">
-                              <Avatar src={resolveMediaUrl(card.image_url)} variant="rounded" sx={{ width: 56, height: 78 }} />
-                              <Box>
-                                <Typography fontWeight={700}>{card.name}</Typography>
-                                <Typography variant="body2" color="text.secondary">
-                                  {card.card_type || 'Keine Typinfo'}
-                                </Typography>
-                                <Typography variant="body2" color="text.secondary">
-                                  {[card.set_code || selectedSet.set_code || 'Kein Setcode', card.language.toUpperCase()].join(' | ')}
-                                </Typography>
-                              </Box>
-                            </Stack>
-                          </TableCell>
-                          <TableCell>{card.card_number || 'n/a'}</TableCell>
-                          <TableCell>{card.rarity || 'n/a'}</TableCell>
-                          <TableCell align="right">{card.existing_quantity}</TableCell>
-                          <TableCell align="right">
-                            {card.current_market_price !== null && card.current_market_price !== undefined
-                              ? formatCurrency(card.current_market_price, card.current_price_currency || displayCurrency)
-                              : 'n/a'}
-                          </TableCell>
-                          <TableCell align="right" sx={{ width: 110 }}>
-                            <TextField
-                              type="number"
-                              size="small"
-                              value={card.selectedQuantity}
-                              onChange={(event) => handleQuantityChange(card.card_print_id, normalizeQuantity(event.target.value))}
-                              onFocus={(event) => event.target.select()}
-                              inputProps={{ min: 0, step: 1, inputMode: 'numeric' }}
-                            />
-                          </TableCell>
-                          <TableCell align="right">
-                            {card.allocatedPurchaseTotal !== null ? formatCurrency(card.allocatedPurchaseTotal, displayCurrency) : 'n/a'}
-                          </TableCell>
-                          <TableCell align="right">
-                            {card.allocatedUnitPrice !== null ? formatCurrency(card.allocatedUnitPrice, displayCurrency) : 'n/a'}
-                          </TableCell>
-                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                            <Button size="small" onClick={() => handleQuantityChange(card.card_print_id, card.selectedQuantity + 1)}>
-                              +1
-                            </Button>
-                            <Button size="small" color="inherit" onClick={() => handleQuantityChange(card.card_print_id, 0)}>
-                              0
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </Box>
-            </Box>
-          )}
-        </Paper>
-
-        <Stack spacing={3}>
-          <Paper sx={{ p: 3 }}>
-            <Typography variant="h6">4. Live-Zusammenfassung</Typography>
-            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              Die Verteilung aktualisiert sich bei jeder Mengen- oder Preis-Änderung.
-            </Typography>
-            <Box sx={{ display: 'grid', gap: 1.25, mt: 2.5 }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Display-Gesamtpreis</Typography>
-                <Typography fontWeight={700}>
-                  {parsedDisplayTotalPrice === null ? 'n/a' : formatCurrency(parsedDisplayTotalPrice, displayCurrency)}
-                </Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Ausgewählte Kartenzeilen</Typography>
-                <Typography fontWeight={700}>{selectedLineCount}</Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Gesamtanzahl</Typography>
-                <Typography fontWeight={700}>{selectedQuantityTotal}</Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Ankauf pro Karte</Typography>
-                <Typography fontWeight={700}>
-                  {allocationPreview.averageUnitPrice === null ? 'n/a' : formatCurrency(allocationPreview.averageUnitPrice, displayCurrency)}
-                </Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Verteilter Ankauf gesamt</Typography>
-                <Typography fontWeight={700}>
-                  {allocationPreview.totalAllocatedPrice === null ? 'n/a' : formatCurrency(allocationPreview.totalAllocatedPrice, displayCurrency)}
-                </Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Kontrolle Verteilung</Typography>
-                <Typography fontWeight={700}>
-                  {allocationDifference === null ? 'n/a' : formatCurrency(allocationDifference, displayCurrency)}
-                </Typography>
-              </Box>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
-                <Typography color="text.secondary">Marktreferenz</Typography>
-                <Typography fontWeight={700}>
-                  {marketCurrencies.length <= 1
-                    ? formatCurrency(estimatedMarketTotal, marketCurrencies[0] || displayCurrency)
-                    : 'gemischte Währungen'}
-                </Typography>
-              </Box>
-            </Box>
-
-            {allocationPreview.remainderCents > 0 ? (
-              <Alert severity="info" sx={{ mt: 2.25 }}>
-                {allocationPreview.remainderCents} Cent Rundungsrest werden deterministisch auf die letzten ausgewählten Zeilen verteilt.
-              </Alert>
-            ) : null}
-
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2.5 }}>
-              <Chip label={`Währung: ${displayCurrency}`} variant="outlined" />
-              <Chip label={`Sprache: ${language.toUpperCase()}`} variant="outlined" />
-              <Chip label={`Zustand: ${condition}`} variant="outlined" />
-              {storageLocationId ? (
-                <Chip
-                  label={`Lagerort: ${storageLocations.find((location) => String(location.id) === storageLocationId)?.path_cache || storageLocationId}`}
-                  variant="outlined"
-                />
-              ) : null}
-            </Stack>
-          </Paper>
-
-          <Paper
-            sx={{
-              p: 3,
-              position: { xl: 'sticky' },
-              top: { xl: 24 },
+              setLanguage(event.target.value);
+              if (selectedSet) {
+                void loadSetCards(selectedSet.id, event.target.value);
+              }
             }}
           >
-            <Typography variant="h6">5. Speichern</Typography>
-            <Typography color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>
-              Beim Speichern wird ein eigener Einkaufsvorgang erzeugt. Jede Zeile behält ihre exakt verteilte Kostenbasis und referenziert
-              denselben Batch.
+            <MenuItem value="de">Deutsch</MenuItem>
+            <MenuItem value="en">Englisch</MenuItem>
+            <MenuItem value="jp">Japanisch</MenuItem>
+          </TextField>
+          <TextField
+            label="Kaufpreis gesamt"
+            placeholder="optional"
+            inputMode="decimal"
+            value={purchasePrice}
+            onChange={(event) => setPurchasePrice(event.target.value)}
+            InputProps={{ endAdornment: <InputAdornment position="end">{currency}</InputAdornment> }}
+            helperText="z. B. Preis des Displays"
+          />
+          <TextField
+            select
+            label="Kaufpreis verteilen"
+            value={allocationMode}
+            disabled={purchaseTotal === null}
+            onChange={(event) => setAllocationMode(event.target.value as AllocationMode)}
+            helperText={allocationMode === 'market_value' ? 'Teure Karten bekommen mehr Anteil' : 'Jede Karte gleich viel'}
+          >
+            <MenuItem value="market_value">Nach Marktwert</MenuItem>
+            <MenuItem value="even">Gleichmäßig</MenuItem>
+          </TextField>
+        </Box>
+        <Box sx={{ display: 'grid', gap: 2, mt: 2, gridTemplateColumns: { xs: '1fr', md: '1.2fr 1fr 2fr' } }}>
+          <TextField select label="Lagerort" value={storageLocationId} onChange={(event) => setStorageLocationId(event.target.value)}>
+            <MenuItem value="">Nicht zugewiesen</MenuItem>
+            {storageLocations.map((location) => (
+              <MenuItem key={location.id} value={location.id}>
+                {location.path_cache}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField select label="Zustand" value={condition} onChange={(event) => setCondition(event.target.value)}>
+            {CONDITION_OPTIONS.map((option) => (
+              <MenuItem key={option.value} value={option.value}>
+                {option.label}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField label="Notiz" placeholder="optional, z. B. Display 04/2026" value={notes} onChange={(event) => setNotes(event.target.value)} />
+        </Box>
+      </Paper>
+
+      {selectedSet && !selectedSet.is_complete ? (
+        <Alert severity="warning">
+          {selectedSet.warning || 'Für dieses Set sind evtl. nicht alle Karten bekannt.'} Du kannst die vorhandenen Karten trotzdem erfassen.
+        </Alert>
+      ) : null}
+
+      {selectedSet ? (
+        <Paper sx={{ p: { xs: 2, sm: 3 } }}>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+            <BoltRoundedIcon color="primary" />
+            <Typography variant="h6">2. Schnellerfassung</Typography>
+          </Stack>
+          <TextField
+            inputRef={quickEntryRef}
+            fullWidth
+            autoComplete="off"
+            label="Kartennummer oder Name"
+            placeholder="z. B. 45, DE045 oder Dunkler Magier; mehrere: 45 x3"
+            value={quickEntry}
+            onChange={(event) => {
+              setQuickEntry(event.target.value);
+              setQuickEntryCandidates([]);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                submitQuickEntry();
+              }
+            }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchRoundedIcon />
+                </InputAdornment>
+              ),
+            }}
+            helperText="Enter fügt die Karte hinzu. Bei mehreren Treffern (z. B. gleiche Nummer, andere Rarität) unten auswählen."
+          />
+          {quickEntryCandidates.length ? (
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
+              {quickEntryCandidates.map((candidate) => (
+                <Chip
+                  key={candidate.card_print_id}
+                  clickable
+                  color="primary"
+                  variant="outlined"
+                  avatar={<Avatar src={resolveMediaUrl(candidate.image_url)} />}
+                  label={`${candidate.card_number || ''} ${candidate.name} · ${candidate.rarity || 'n/a'}`}
+                  onClick={() => addCard(candidate, parseQuickEntry(quickEntry).quantity)}
+                />
+              ))}
+            </Stack>
+          ) : quickEntry.trim() && !findQuickEntryMatches(setCards, parseQuickEntry(quickEntry).term).length ? (
+            <Typography color="warning.main" variant="body2" sx={{ mt: 1 }}>
+              Keine Karte in diesem Set gefunden.
             </Typography>
-            <Button
-              variant="contained"
-              size="large"
-              startIcon={saving ? <CircularProgress size={18} color="inherit" /> : <AddTaskRoundedIcon />}
-              disabled={saving || !selectedSet || !selectedRows.length || parsedDisplayTotalPrice === null || isImportBlocked}
-              fullWidth
-              onClick={() => void handleSave()}
-            >
-              {saving ? 'Speichere Einkaufsvorgang...' : 'Einkaufsvorgang speichern'}
-            </Button>
-          </Paper>
-        </Stack>
-      </Box>
+          ) : null}
+          {lastAdded ? (
+            <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mt: 1.5 }}>
+              <Avatar src={resolveMediaUrl(lastAdded.row.image_url)} variant="rounded" sx={{ width: 32, height: 46 }} />
+              <Typography variant="body2">
+                Hinzugefügt: <strong>{lastAdded.row.name}</strong> ({lastAdded.row.card_number}, {lastAdded.row.rarity}) · jetzt {lastAdded.quantity}×
+              </Typography>
+              <Button size="small" color="inherit" onClick={() => changeQuantity(lastAdded.row.card_print_id, lastAdded.quantity - 1)}>
+                Rückgängig
+              </Button>
+            </Stack>
+          ) : null}
+        </Paper>
+      ) : null}
+
+      <Paper sx={{ overflow: 'hidden' }}>
+        {!selectedSet ? (
+          <Box sx={{ p: 5, textAlign: 'center' }}>
+            <Typography variant="h6">Noch kein Set ausgewählt</Typography>
+            <Typography color="text.secondary" sx={{ mt: 0.75 }}>
+              Wähle oben ein Set. Danach erscheinen alle Karten des Sets.
+            </Typography>
+          </Box>
+        ) : loadingCards ? (
+          <Box sx={{ p: 5, display: 'grid', placeItems: 'center' }}>
+            <CircularProgress />
+          </Box>
+        ) : (
+          <>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ px: { xs: 2, sm: 3 }, py: 2 }}>
+              <Typography variant="h6" sx={{ flex: 1 }}>
+                3. Kartenliste ({setCards.length})
+              </Typography>
+              <TextField size="small" label="Filtern" value={filterText} onChange={(event) => setFilterText(event.target.value)} />
+              <FormControlLabel
+                control={<Switch checked={onlySelected} onChange={(event) => setOnlySelected(event.target.checked)} />}
+                label="Nur erfasste"
+              />
+            </Stack>
+            <Box sx={{ maxHeight: '65vh', overflow: 'auto' }}>
+              <Table stickyHeader size="small">
+                <TableHead>
+                  <TableRow>
+                    {sortHeader('name', 'Karte')}
+                    {sortHeader('card_number', 'Nr.')}
+                    <TableCell>Seltenheit</TableCell>
+                    <TableCell align="right">Im Bestand</TableCell>
+                    {sortHeader('current_market_price', 'Marktpreis', 'right')}
+                    {sortHeader('quantity', 'Menge', 'right')}
+                    {purchaseTotal !== null ? <TableCell align="right">Kaufpreis-Anteil</TableCell> : null}
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {visibleRows.map((card) => {
+                    const quantity = quantities[card.card_print_id] || 0;
+                    const line = allocation[card.card_print_id];
+                    return (
+                      <TableRow key={card.card_print_id} hover sx={{ backgroundColor: quantity > 0 ? 'rgba(216, 169, 76, 0.08)' : undefined }}>
+                        <TableCell>
+                          <Stack direction="row" spacing={1.5} alignItems="center">
+                            <Avatar src={resolveMediaUrl(card.image_url)} variant="rounded" sx={{ width: 40, height: 58 }} />
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography fontWeight={700}>{card.name}</Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {card.card_type || ''}
+                              </Typography>
+                            </Box>
+                          </Stack>
+                        </TableCell>
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>{card.card_number || 'n/a'}</TableCell>
+                        <TableCell>{card.rarity || 'n/a'}</TableCell>
+                        <TableCell align="right">{card.existing_quantity || '–'}</TableCell>
+                        <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                          {card.current_market_price != null ? formatCurrency(card.current_market_price, card.current_price_currency || currency) : '–'}
+                        </TableCell>
+                        <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
+                            <IconButton size="small" disabled={!quantity} onClick={() => changeQuantity(card.card_print_id, quantity - 1)} aria-label="Weniger">
+                              <RemoveRoundedIcon fontSize="small" />
+                            </IconButton>
+                            <TextField
+                              size="small"
+                              value={quantity}
+                              onFocus={(event) => event.target.select()}
+                              onChange={(event) => changeQuantity(card.card_print_id, Math.max(0, Number.parseInt(event.target.value, 10) || 0))}
+                              inputProps={{ inputMode: 'numeric', style: { textAlign: 'center', width: 32 } }}
+                            />
+                            <IconButton size="small" color="primary" onClick={() => changeQuantity(card.card_print_id, quantity + 1)} aria-label="Mehr">
+                              <AddRoundedIcon fontSize="small" />
+                            </IconButton>
+                          </Stack>
+                        </TableCell>
+                        {purchaseTotal !== null ? (
+                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                            {line ? (
+                              <>
+                                {formatCurrency(line.lineTotal, currency)}
+                                {line.quantity > 1 ? (
+                                  <Typography variant="body2" color="text.secondary">
+                                    {formatCurrency(line.unitPrice, currency)} / Stk.
+                                  </Typography>
+                                ) : null}
+                              </>
+                            ) : (
+                              '–'
+                            )}
+                          </TableCell>
+                        ) : null}
+                      </TableRow>
+                    );
+                  })}
+                  {!visibleRows.length ? (
+                    <TableRow>
+                      <TableCell colSpan={7}>
+                        <Typography color="text.secondary" sx={{ py: 2, textAlign: 'center' }}>
+                          {onlySelected ? 'Noch keine Karten erfasst.' : 'Keine Karten gefunden.'}
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+            </Box>
+          </>
+        )}
+      </Paper>
+
+      {selectedSet ? (
+        <Paper
+          elevation={8}
+          sx={{
+            position: 'sticky',
+            bottom: { xs: 8, md: 16 },
+            zIndex: 5,
+            p: 2,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2,
+            flexWrap: 'wrap',
+            border: '1px solid rgba(216,169,76,0.35)',
+            backdropFilter: 'blur(12px)',
+          }}
+        >
+          <Stack direction="row" spacing={3} flexWrap="wrap" useFlexGap sx={{ flex: 1 }}>
+            <Box>
+              <Typography variant="body2" color="text.secondary">
+                Karten
+              </Typography>
+              <Typography fontWeight={800}>{totalQuantity}</Typography>
+            </Box>
+            <Box>
+              <Typography variant="body2" color="text.secondary">
+                Marktwert{unpricedCount ? ` (${unpricedCount} ohne Preis)` : ''}
+              </Typography>
+              <Typography fontWeight={800}>{formatCurrency(marketTotal, currency)}</Typography>
+            </Box>
+            {purchaseTotal !== null ? (
+              <>
+                <Box>
+                  <Typography variant="body2" color="text.secondary">
+                    Kaufpreis
+                  </Typography>
+                  <Typography fontWeight={800}>{formatCurrency(purchaseTotal, currency)}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="body2" color="text.secondary">
+                    Bilanz
+                  </Typography>
+                  <Typography fontWeight={800} color={(balance || 0) >= 0 ? 'success.main' : 'error.main'}>
+                    {(balance || 0) >= 0 ? '+' : ''}
+                    {formatCurrency(balance, currency)}
+                  </Typography>
+                </Box>
+              </>
+            ) : null}
+          </Stack>
+          <Button color="inherit" disabled={!totalQuantity || saving} onClick={() => setQuantities({})}>
+            Leeren
+          </Button>
+          <Button
+            variant="contained"
+            size="large"
+            startIcon={saving ? <CircularProgress size={18} color="inherit" /> : <AddTaskRoundedIcon />}
+            disabled={saving || !totalQuantity}
+            onClick={() => void handleSave()}
+          >
+            {saving ? 'Speichere…' : `${totalQuantity} Karten speichern`}
+          </Button>
+        </Paper>
+      ) : null}
     </Stack>
   );
 }

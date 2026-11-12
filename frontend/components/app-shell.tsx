@@ -28,7 +28,7 @@ import {
 const navigation = [
   { href: '/', label: 'Dashboard', icon: <DashboardRoundedIcon /> },
   { href: '/cards', label: 'Karten', icon: <Inventory2RoundedIcon /> },
-  { href: '/set-import', label: 'Set-Erfassung', icon: <LayersRoundedIcon /> },
+  { href: '/set-import', label: 'Display / Set erfassen', icon: <LayersRoundedIcon /> },
   { href: '/storage-locations', label: 'Lagerorte', icon: <StorageRoundedIcon /> },
   { href: '/decks', label: 'Decklisten', icon: <DeckRoundedIcon /> },
   { href: '/collections', label: 'Sammlungen', icon: <CollectionsBookmarkRoundedIcon /> },

@@ -303,9 +303,12 @@ export interface BulkSetImportLinePayload {
   quantity: number;
 }
 
+export type AllocationMode = 'even' | 'market_value';
+
 export interface BulkSetImportPayload {
   set_id: number;
-  display_total_price: number;
+  display_total_price?: number | null;
+  allocation_mode: AllocationMode;
   currency: string;
   storage_location_id?: number | null;
   condition: string;
@@ -338,6 +341,8 @@ export interface BulkSetImportResponse {
   allocation_difference: number;
   allocation_lines: BulkSetImportAllocationLine[];
   rounding_remainder_cents: number;
+  allocation_mode?: AllocationMode;
+  warning?: string | null;
   price_sync_job?: SyncJob | null;
   price_sync_job_error?: string | null;
 }
