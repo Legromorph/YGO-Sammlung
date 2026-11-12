@@ -14,7 +14,8 @@ from app.database import session_scope
 from app.integrations.prices import get_active_price_provider
 from app.models import InventoryItem, PriceMonitorState, SyncJob
 from app.services.price_monitor import PRICE_STATE_HIGH_VOLATILITY, PRICE_STATE_NEW, PRICE_STATE_RETRY, PRICE_STATE_VOLATILE
-from app.services.sync import _extract_price_targets, queue_price_update_job, queue_sync_job
+from app.services.sync import queue_price_update_job, queue_sync_job
+from app.services.sync_jobs import _extract_price_targets
 from app.time_utils import utc_now
 
 

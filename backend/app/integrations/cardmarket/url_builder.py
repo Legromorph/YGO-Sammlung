@@ -7,24 +7,14 @@ from urllib.parse import urlparse
 from app.time_utils import utc_now
 
 from .product_url_builder import (
-    CARDMARKET_BASE_URL,
     CARDMARKET_CATEGORY,
     CARDMARKET_MATCH_AMBIGUOUS,
     CARDMARKET_MATCH_EXACT,
     CARDMARKET_MATCH_EXACT_VARIANT,
     CARDMARKET_MATCH_FAILED,
-    CARDMARKET_MATCH_MANUAL,
-    CARDMARKET_SAFE_MATCH_QUALITIES,
-    CARDMARKET_MATCH_SET_NAME,
     CardmarketProductUrlBuilder,
-    CardmarketUrlBuilder,
-    CardmarketUrlCandidate,
     _slug_has_variant_marker,
-    build_cardmarket_fallback_url,
-    build_cardmarket_product_slug,
-    build_cardmarket_product_url,
     build_cardmarket_set_slug,
-    slugify_cardmarket_segment,
 )
 from .set_slug_resolver import CardmarketSetSlugCandidate
 

@@ -1,48 +1,32 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 import logging
 import re
-from urllib.parse import quote
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.domain.print_codes import (
+    LANGUAGE_SET_CODE_PREFIXES,
+    derive_card_number,
+    derive_print_language,
+    normalize_lookup_value,
+    normalize_name,
+    set_code_language_neutral_signature,
+)
 from app.domain.card_metadata import apply_card_metadata, normalize_card_metadata
-from app.config import settings
 from app.integrations.card_data import get_card_data_provider
 from app.integrations.price_values import parse_positive_price
-from app.models import Card, CardPrint, CardSet, ImageAsset, InventoryItem, SourceMapping
+from app.models import Card, CardPrint, CardSet, InventoryItem, SourceMapping
 from app.schemas import CardSetSummary, SetCardRow, SetCardsResponse
 from app.services.app_settings import get_app_settings
+from app.services.card_common import _first_image, _placeholder_url, _proxy_remote_image_url
 from app.services.currency import convert_amount
 from app.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
-
-LANGUAGE_SET_CODE_PREFIXES: dict[str, tuple[str, ...]] = {
-    "de": ("DE",),
-    "en": ("EN",),
-    "fr": ("FR",),
-    "it": ("IT",),
-    "es": ("ES", "SP"),
-    "pt": ("PT",),
-    "jp": ("JP",),
-    "ja": ("JP",),
-    "ko": ("KR",),
-}
-
-
-def normalize_name(value: str) -> str:
-    return " ".join(value.lower().split())
-
-
-def _normalize_lookup_value(value: str | None) -> str:
-    if not value:
-        return ""
-    return re.sub(r"[^a-z0-9]", "", value.lower())
-
 
 def _parse_int(value: object) -> int | None:
     try:
@@ -51,39 +35,6 @@ def _parse_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def _derive_card_number(set_code: str | None) -> str | None:
-    if not set_code or "-" not in set_code:
-        return None
-    return set_code.rsplit("-", 1)[-1] or None
-
-
-def _derive_print_language(set_code: str | None) -> str:
-    if not set_code or "-" not in set_code:
-        return "en"
-
-    segment = set_code.split("-", 1)[-1].upper()
-    match = re.match(r"([A-Z]{2,3})", segment)
-    token = match.group(1) if match else ""
-
-    if token.startswith("EN"):
-        return "en"
-    if token.startswith("DE"):
-        return "de"
-    if token.startswith("FR"):
-        return "fr"
-    if token.startswith("IT"):
-        return "it"
-    if token.startswith("SP") or token.startswith("ES"):
-        return "es"
-    if token.startswith("PT"):
-        return "pt"
-    if token.startswith("JP"):
-        return "jp"
-    if token.startswith("KR"):
-        return "ko"
-    return "en"
 
 
 def _preferred_set_code_prefix(language: str | None) -> str | None:
@@ -125,51 +76,28 @@ def _translate_card_number_language(card_number: str | None, language: str | Non
         return translated_from_value
     translated_set_code = _translate_set_code_language(set_code, language)
     if translated_set_code:
-        return _derive_card_number(translated_set_code)
+        return derive_card_number(translated_set_code)
     return (card_number or "").strip().upper() or None
 
 
-def _set_code_language_neutral_signature(set_code: str | None) -> tuple[str, str] | None:
+def _print_set_signature(set_code: str | None) -> tuple[str, str]:
+    """Language-neutral grouping key; falls back to the raw code when no language prefix exists."""
     normalized_set_code = (set_code or "").strip().upper()
-    if not normalized_set_code:
-        return None
-    if "-" not in normalized_set_code:
-        return _normalize_lookup_value(normalized_set_code), ""
-
-    series, suffix = normalized_set_code.split("-", 1)
-    match = re.match(r"([A-Z]{2,3})([A-Z0-9-]+)$", suffix)
-    if not match:
-        return _normalize_lookup_value(series), _normalize_lookup_value(suffix)
-    return _normalize_lookup_value(series), _normalize_lookup_value(match.group(2))
+    signature = set_code_language_neutral_signature(normalized_set_code)
+    if signature:
+        return signature
+    series, _, suffix = normalized_set_code.partition("-")
+    return normalize_lookup_value(series), normalize_lookup_value(suffix)
 
 
 def _print_signature(card_print: CardPrint) -> tuple[int, str, str, str]:
-    set_signature = _set_code_language_neutral_signature(card_print.set_code) or ("", "")
+    set_signature = _print_set_signature(card_print.set_code)
     return (
         int(card_print.card_id),
         set_signature[0],
         set_signature[1],
-        _normalize_lookup_value(card_print.rarity),
+        normalize_lookup_value(card_print.rarity),
     )
-
-
-def _placeholder_url(set_id: int, card_name: str) -> str:
-    return f"{settings.api_prefix}/assets/placeholder?item_id={set_id}&label={card_name}"
-
-
-def _proxy_remote_image_url(url: str | None) -> str | None:
-    if not url:
-        return None
-    return f"{settings.api_prefix}/assets/proxy?url={quote(url, safe='')}"
-
-
-def _first_image(card_print: CardPrint) -> ImageAsset | None:
-    assets = sorted(
-        [asset for asset in card_print.image_assets if asset.status == "downloaded" and asset.local_path],
-        key=lambda asset: asset.downloaded_at or asset.updated_at,
-        reverse=True,
-    )
-    return assets[0] if assets else None
 
 
 def _natural_sort_key(value: str | None) -> tuple:
@@ -196,8 +124,8 @@ def _set_code_prefix(value: str | None) -> str:
 
 
 def _matches_card_set(remote_print: dict, card_set: CardSet) -> bool:
-    remote_set_name = _normalize_lookup_value(remote_print.get("set_name"))
-    catalog_set_name = _normalize_lookup_value(card_set.name)
+    remote_set_name = normalize_lookup_value(remote_print.get("set_name"))
+    catalog_set_name = normalize_lookup_value(card_set.name)
     remote_set_code_prefix = _set_code_prefix(remote_print.get("set_code"))
     catalog_set_code_prefix = _set_code_prefix(card_set.set_code)
 
@@ -368,7 +296,7 @@ async def _ensure_requested_language_prints(db: AsyncSession, card_set: CardSet,
             source_print.card_number,
             normalized_language,
             set_code=source_print.set_code,
-        ) or _derive_card_number(translated_set_code)
+        ) or derive_card_number(translated_set_code)
 
         target_print.set_id = source_print.set_id
         target_print.language = normalized_language
@@ -698,10 +626,10 @@ async def _upsert_card_set_card(db: AsyncSession, card_set: CardSet, remote_card
             db.add(card_print)
 
         card_print.set_id = card_set.id
-        card_print.language = _derive_print_language(set_code)
+        card_print.language = derive_print_language(set_code)
         card_print.set_name = remote_print.get("set_name") or card_set.name
         card_print.set_code = set_code
-        card_print.card_number = _derive_card_number(set_code)
+        card_print.card_number = derive_card_number(set_code)
         card_print.rarity = remote_print.get("set_rarity")
         card_print.rarity_code = remote_print.get("set_rarity_code")
         card_print.release_date = card_set.release_date

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
@@ -10,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.integrations.price_values import parse_positive_price
 from app.models import CardPrint, CardSet, InventoryItem, PriceHistory, PurchaseBatch, PurchaseBatchItem, SourceMapping, StorageLocation
 from app.schemas import BulkSetImportPayload, BulkSetImportResponse
-from app.services.sets import sync_card_set_cards, sync_card_sets_catalog
+from app.services.sets import _expected_card_count, sync_card_set_cards, sync_card_sets_catalog
 from app.services.price_monitor import ensure_initial_price_monitor_state
 from app.time_utils import utc_now
 
@@ -41,16 +40,6 @@ def _to_float(value: Decimal | float | int | None) -> float | None:
     if value is None:
         return None
     return float(value)
-
-
-def _expected_card_count(card_set: CardSet) -> int:
-    payload_count = 0
-    try:
-        payload_count = int((card_set.source_payload or {}).get("num_of_cards") or 0)
-    except (TypeError, ValueError):
-        payload_count = 0
-    direct_count = int(card_set.card_count or 0)
-    return max(payload_count, direct_count)
 
 
 def _allocate_display_total(display_total_price: Decimal, selected_lines: list[tuple[int, int]]) -> tuple[list[AllocationLine], Decimal | None, int]:

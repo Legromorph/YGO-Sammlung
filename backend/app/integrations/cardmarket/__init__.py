@@ -2,7 +2,7 @@ from .product_resolver import CardmarketProductResolver, get_cardmarket_product_
 from .product_url_builder import CardmarketProductUrlBuilder
 from .set_slug_resolver import CardmarketSetSlugCandidate, CardmarketSetSlugResolver, get_cardmarket_set_slug_resolver
 from .types import CardmarketPrintContext, CardmarketResolvedProduct
-from .url_builder import (
+from .product_url_builder import (
     CARDMARKET_BASE_URL,
     CARDMARKET_CATEGORY,
     CARDMARKET_MATCH_AMBIGUOUS,
@@ -10,18 +10,20 @@ from .url_builder import (
     CARDMARKET_MATCH_EXACT_VARIANT,
     CARDMARKET_MATCH_FAILED,
     CARDMARKET_MATCH_MANUAL,
-    CARDMARKET_SAFE_MATCH_QUALITIES,
     CARDMARKET_MATCH_SET_NAME,
-    CardmarketLinkResolution,
+    CARDMARKET_SAFE_MATCH_QUALITIES,
     CardmarketUrlBuilder,
     CardmarketUrlCandidate,
     build_cardmarket_fallback_url,
     build_cardmarket_product_slug,
     build_cardmarket_product_url,
     build_cardmarket_set_slug,
+    slugify_cardmarket_segment,
+)
+from .url_builder import (
+    CardmarketLinkResolution,
     normalize_cardmarket_product_url,
     resolve_cardmarket_product_url,
-    slugify_cardmarket_segment,
     split_cardmarket_product_url,
 )
 

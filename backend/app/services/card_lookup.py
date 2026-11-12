@@ -5,6 +5,7 @@ import logging
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.print_codes import derive_card_number, derive_print_language, normalize_lookup_value, normalize_name, set_codes_match_language_neutral
 from app.integrations.cardmarket import (
     CardmarketPrintContext,
     CardmarketResolvedProduct,
@@ -37,21 +38,16 @@ from app.services.card_common import (
     _build_print_label,
     _card_numbers_match,
     _dedupe_text_values,
-    _derive_card_number,
-    _derive_print_language,
     _find_matching_card_set,
     _is_safe_cardmarket_quality,
     _load_cardmarket_set_slug_hints,
-    _normalize_lookup_value,
     _normalize_optional_text,
     _parse_language_preferences,
     _preferred_cardmarket_locale,
     _price_note,
     _remote_image_url,
     _resolve_default_remote_price,
-    _set_codes_match_language_neutral,
     _update_card_set_cardmarket_metadata,
-    normalize_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,11 +186,11 @@ def _find_local_cardmarket_references(
 
     matches: list[dict[str, object | None]] = []
     for (candidate_set_code, candidate_card_number, candidate_rarity, candidate_language), candidates in references.items():
-        if not _set_codes_match_language_neutral(set_code, candidate_set_code):
+        if not set_codes_match_language_neutral(set_code, candidate_set_code):
             continue
         if card_number and candidate_card_number and not _card_numbers_match(card_number, candidate_card_number):
             continue
-        if _normalize_lookup_value(rarity) != _normalize_lookup_value(candidate_rarity):
+        if normalize_lookup_value(rarity) != normalize_lookup_value(candidate_rarity):
             continue
         if candidate_language == language:
             matches[0:0] = candidates
@@ -333,41 +329,41 @@ def _matches_cardmarket_remote_print(
     card_number: str | None,
     rarity: str | None,
 ) -> bool:
-    normalized_set_code = _normalize_lookup_value(set_code)
-    normalized_set_name = _normalize_lookup_value(set_name)
-    remote_set_code = _normalize_lookup_value(remote_print.get("set_code"))
-    remote_set_name = _normalize_lookup_value(remote_print.get("set_name"))
+    normalized_set_code = normalize_lookup_value(set_code)
+    normalized_set_name = normalize_lookup_value(set_name)
+    remote_set_code = normalize_lookup_value(remote_print.get("set_code"))
+    remote_set_name = normalize_lookup_value(remote_print.get("set_name"))
 
-    if normalized_set_code and remote_set_code and not _set_codes_match_language_neutral(set_code, remote_print.get("set_code")):
+    if normalized_set_code and remote_set_code and not set_codes_match_language_neutral(set_code, remote_print.get("set_code")):
         return False
     if normalized_set_code and not remote_set_code:
         return False
     if not normalized_set_code and normalized_set_name and remote_set_name and normalized_set_name != remote_set_name:
         return False
 
-    expected_card_number = card_number or _derive_card_number(set_code)
-    remote_card_number = _derive_card_number(remote_print.get("set_code"))
+    expected_card_number = card_number or derive_card_number(set_code)
+    remote_card_number = derive_card_number(remote_print.get("set_code"))
     if expected_card_number and remote_card_number and not _card_numbers_match(expected_card_number, remote_card_number):
         return False
 
-    normalized_rarity = _normalize_lookup_value(rarity)
-    remote_rarity = _normalize_lookup_value(remote_print.get("set_rarity"))
+    normalized_rarity = normalize_lookup_value(rarity)
+    remote_rarity = normalize_lookup_value(remote_print.get("set_rarity"))
     if normalized_rarity and remote_rarity and normalized_rarity != remote_rarity:
         return False
 
     return True
 
 def _cardmarket_variant_count_for_remote_card(remote_card: dict, *, set_code: str | None, set_name: str | None) -> int:
-    normalized_set_name = _normalize_lookup_value(set_name)
+    normalized_set_name = normalize_lookup_value(set_name)
     if not set_code and not normalized_set_name:
         return 1
 
     count = 0
     for remote_print in remote_card.get("card_sets") or []:
         remote_set_code = remote_print.get("set_code")
-        remote_set_name = _normalize_lookup_value(remote_print.get("set_name"))
+        remote_set_name = normalize_lookup_value(remote_print.get("set_name"))
         if set_code and remote_set_code:
-            matches = _set_codes_match_language_neutral(set_code, remote_set_code)
+            matches = set_codes_match_language_neutral(set_code, remote_set_code)
         else:
             matches = bool(normalized_set_name and remote_set_name == normalized_set_name)
         if matches:
@@ -458,7 +454,7 @@ async def _resolve_exact_cardmarket_product(
                 (
                     english_set_name
                     for english_set_code, english_set_name in english_set_names_by_code.items()
-                    if _set_codes_match_language_neutral(payload.set_code, english_set_code)
+                    if set_codes_match_language_neutral(payload.set_code, english_set_code)
                 ),
                 preferred_set_name,
             )
@@ -479,7 +475,7 @@ async def _resolve_exact_cardmarket_product(
         set_name=preferred_set_name,
         set_code=payload.set_code,
         rarity=payload.cardmarket_expected_rarity or payload.rarity,
-        card_number=payload.card_number or _derive_card_number(payload.set_code),
+        card_number=payload.card_number or derive_card_number(payload.set_code),
         language=payload.cardmarket_expected_language or normalized_language,
         variant_count=variant_count,
         variant_name=preferred_variant_name,
@@ -552,7 +548,7 @@ async def get_card_lookup(
     seen_keys: set[tuple[str | None, str | None, str | None]] = set()
     set_counts: dict[str, int] = {}
     for remote_print in raw_prints:
-        set_key = _normalize_lookup_value(remote_print.get("set_code") or remote_print.get("set_name"))
+        set_key = normalize_lookup_value(remote_print.get("set_code") or remote_print.get("set_name"))
         if set_key:
             set_counts[set_key] = set_counts.get(set_key, 0) + 1
 
@@ -567,9 +563,9 @@ async def get_card_lookup(
             continue
         seen_keys.add(key)
 
-        print_card_number = _derive_card_number(set_code)
-        print_language = _derive_print_language(set_code)
-        set_key = _normalize_lookup_value(set_code or set_name)
+        print_card_number = derive_card_number(set_code)
+        print_language = derive_print_language(set_code)
+        set_key = normalize_lookup_value(set_code or set_name)
         has_multiple_variants = bool(set_key and set_counts.get(set_key, 0) > 1)
 
         set_price = parse_positive_price(remote_print.get("set_price"))

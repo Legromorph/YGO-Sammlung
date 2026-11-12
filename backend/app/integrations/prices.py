@@ -4,13 +4,12 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 import logging
-import re
 
+from app.domain.print_codes import card_number_language_neutral, derive_card_number, derive_print_language, normalize_lookup_value, set_codes_match_language_neutral
 from app.config import settings
 from app.integrations.card_data import get_card_data_provider
 from app.integrations.cardmarket import (
     CARDMARKET_MATCH_EXACT,
-    CARDMARKET_MATCH_EXACT_VARIANT,
     CARDMARKET_MATCH_FAILED,
 )
 from app.integrations.price_values import parse_positive_price
@@ -19,81 +18,14 @@ from app.models import Card, CardPrint, InventoryItem, SourceMapping
 
 logger = logging.getLogger(__name__)
 PRICE_MATCH_FALLBACK_NAME_ONLY = "fallback_name_only"
-PRINT_LANGUAGE_PREFIXES = ("DE", "EN", "FR", "IT", "ES", "SP", "PT", "JP", "KR")
-
-
-def _normalize_token(value: str | None) -> str:
-    if not value:
-        return ""
-    return re.sub(r"[^a-z0-9]", "", value.lower())
-
-
-def _set_code_language_neutral_signature(set_code: str | None) -> tuple[str, str] | None:
-    normalized_set_code = (set_code or "").strip().upper()
-    if "-" not in normalized_set_code:
-        return None
-    series, suffix = normalized_set_code.split("-", 1)
-    language_prefix_pattern = "|".join(PRINT_LANGUAGE_PREFIXES)
-    match = re.match(rf"(?:{language_prefix_pattern})([A-Z0-9-]+)$", suffix)
-    if not match:
-        return None
-    return _normalize_token(series), _normalize_token(match.group(1))
-
-
-def _set_codes_match_language_neutral(left: str | None, right: str | None) -> bool:
-    normalized_left = _normalize_token(left)
-    normalized_right = _normalize_token(right)
-    if not normalized_left or not normalized_right:
-        return False
-    if normalized_left == normalized_right:
-        return True
-    left_signature = _set_code_language_neutral_signature(left)
-    right_signature = _set_code_language_neutral_signature(right)
-    return bool(left_signature and right_signature and left_signature == right_signature)
-
-
-def _derive_card_number(set_code: str | None) -> str | None:
-    if not set_code or "-" not in set_code:
-        return None
-    return set_code.rsplit("-", 1)[-1] or None
-
-
-def _card_number_language_neutral(value: str | None) -> str:
-    normalized_value = (value or "").strip().upper()
-    language_prefix_pattern = "|".join(PRINT_LANGUAGE_PREFIXES)
-    match = re.match(rf"^(?:{language_prefix_pattern})([A-Z0-9-]+)$", normalized_value)
-    return _normalize_token(match.group(1) if match else normalized_value)
-
-
-def _derive_print_language(set_code: str | None) -> str:
-    if not set_code or "-" not in set_code:
-        return "en"
-    suffix = set_code.split("-", 1)[1].upper()
-    if suffix.startswith("DE"):
-        return "de"
-    if suffix.startswith("EN"):
-        return "en"
-    if suffix.startswith("FR"):
-        return "fr"
-    if suffix.startswith("IT"):
-        return "it"
-    if suffix.startswith("ES") or suffix.startswith("SP"):
-        return "es"
-    if suffix.startswith("PT"):
-        return "pt"
-    if suffix.startswith("JP"):
-        return "jp"
-    if suffix.startswith("KR"):
-        return "ko"
-    return "en"
 
 
 def _match_remote_print(card_print: CardPrint, remote_print: dict[str, Any]) -> bool:
     return (
-        _set_codes_match_language_neutral(card_print.set_code, remote_print.get("set_code"))
-        and _card_number_language_neutral(card_print.card_number)
-        == _card_number_language_neutral(_derive_card_number(remote_print.get("set_code")))
-        and _normalize_token(card_print.rarity) == _normalize_token(remote_print.get("set_rarity"))
+        set_codes_match_language_neutral(card_print.set_code, remote_print.get("set_code"))
+        and card_number_language_neutral(card_print.card_number)
+        == card_number_language_neutral(derive_card_number(remote_print.get("set_code")))
+        and normalize_lookup_value(card_print.rarity) == normalize_lookup_value(remote_print.get("set_rarity"))
     )
 
 
@@ -164,7 +96,7 @@ class YgoProDeckPriceProvider:
                 external_id = str(remote_card.get("external_id") or "").strip()
                 if external_id:
                     self._prepared_cards_by_external_id[external_id] = remote_card
-                normalized_name = _normalize_token(remote_card.get("name"))
+                normalized_name = normalize_lookup_value(remote_card.get("name"))
                 if normalized_name:
                     self._prepared_cards_by_name[normalized_name] = remote_card
 
@@ -208,7 +140,7 @@ class YgoProDeckPriceProvider:
 
         remote_card = self._prepared_cards_by_external_id.get(str(external_id)) if external_id else None
         if remote_card is None:
-            remote_card = self._prepared_cards_by_name.get(_normalize_token(card.name))
+            remote_card = self._prepared_cards_by_name.get(normalize_lookup_value(card.name))
         lookup_mode = "prefetched_set" if remote_card is not None else "single_card"
         if remote_card is None:
             remote_card = await provider.fetch_card(
@@ -256,9 +188,9 @@ class YgoProDeckPriceProvider:
         matched_print_indicators = {
             "matched_print_found": bool(matched_print),
             "matched_set_code": matched_print.get("set_code") if matched_print else None,
-            "matched_card_number": _derive_card_number(matched_print.get("set_code")) if matched_print else None,
+            "matched_card_number": derive_card_number(matched_print.get("set_code")) if matched_print else None,
             "matched_rarity": matched_print.get("set_rarity") if matched_print else None,
-            "matched_language": _derive_print_language(matched_print.get("set_code")) if matched_print else None,
+            "matched_language": derive_print_language(matched_print.get("set_code")) if matched_print else None,
             "source_url": matched_print.get("set_url") if matched_print else None,
         }
         provider_diagnostics = {

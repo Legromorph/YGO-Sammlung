@@ -11,10 +11,8 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.integrations.cardmarket import (
-    CARDMARKET_MATCH_AMBIGUOUS,
     CARDMARKET_MATCH_EXACT,
     CARDMARKET_MATCH_EXACT_VARIANT,
-    CARDMARKET_MATCH_FAILED,
     CARDMARKET_MATCH_MANUAL,
     CARDMARKET_MATCH_SET_NAME,
     normalize_cardmarket_product_url,

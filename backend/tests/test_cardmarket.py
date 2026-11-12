@@ -20,13 +20,10 @@ from app.integrations.cardmarket.url_builder import (
 )
 from app.models import Card, CardPrint, InventoryItem
 from app.schemas import CardPayload, CardmarketLinkPayload
-from app.services.cards import (
-    _card_set_lookup_codes,
-    _cardmarket_variant_count_for_remote_card,
-    _find_local_cardmarket_references,
-    _resolve_cardmarket_link,
-    update_cardmarket_link,
-)
+from app.services.card_common import _card_set_lookup_codes
+from app.services.card_lookup import _cardmarket_variant_count_for_remote_card, _find_local_cardmarket_references
+from app.services.card_read import _resolve_cardmarket_link
+from app.services.card_write import update_cardmarket_link
 
 
 class CardmarketUrlTests(unittest.TestCase):

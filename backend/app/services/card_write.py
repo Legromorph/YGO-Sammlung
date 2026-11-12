@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.domain.print_codes import normalize_name
 from app.domain.card_metadata import apply_card_metadata, normalize_card_metadata
 from app.integrations.cardmarket import (
     CARDMARKET_CATEGORY,
@@ -36,7 +37,6 @@ from app.services.card_common import (
     _normalize_price_value,
     _update_card_set_cardmarket_metadata,
     _validate_set_code_language,
-    normalize_name,
 )
 from app.services.card_lookup import _resolve_exact_cardmarket_product
 

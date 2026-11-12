@@ -31,7 +31,8 @@ from app.schemas import (
 from app.services.price_monitor import build_price_monitor_status
 from app.services.app_settings import get_app_settings
 from app.services.currency import convert_amount
-from app.services.sync import _extract_price_targets, serialize_sync_job
+from app.services.sync import serialize_sync_job
+from app.services.sync_jobs import _extract_price_targets
 
 logger = logging.getLogger(__name__)
 

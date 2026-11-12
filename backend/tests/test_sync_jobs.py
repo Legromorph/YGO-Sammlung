@@ -4,7 +4,7 @@ from datetime import timedelta
 import unittest
 
 from app.models import SyncJob
-from app.services.sync import (
+from app.services.sync_jobs import (
     _build_job_lock_key,
     _job_health,
     _merge_price_job_payload,

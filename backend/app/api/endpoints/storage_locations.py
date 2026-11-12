@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.schemas import StorageLocationPayload, StorageLocationResponse
-from app.services.storage import delete_storage_location, get_storage_location, list_storage_locations, upsert_storage_location
+from app.services.storage import delete_storage_location, list_storage_locations, upsert_storage_location
 
 router = APIRouter()
 

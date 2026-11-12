@@ -9,6 +9,7 @@ from urllib.parse import quote
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.print_codes import LANGUAGE_SET_CODE_PREFIXES, normalize_lookup_value, normalize_name
 from app.config import settings
 from app.integrations.cardmarket import CardmarketPrintContext, CardmarketResolvedProduct
 from app.integrations.cardmarket.set_slug_resolver import cardmarket_set_code_family
@@ -30,17 +31,6 @@ from app.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
-LANGUAGE_SET_CODE_PREFIXES: dict[str, tuple[str, ...]] = {
-    "de": ("DE",),
-    "en": ("EN",),
-    "fr": ("FR",),
-    "it": ("IT",),
-    "es": ("ES", "SP"),
-    "pt": ("PT",),
-    "jp": ("JP",),
-    "ja": ("JP",),
-    "ko": ("KR",),
-}
 class DuplicateInventoryItemError(ValueError):
     def __init__(
         self,
@@ -77,9 +67,6 @@ class DuplicateInventoryItemError(ValueError):
                 "condition": self.condition,
             },
         }
-
-def normalize_name(value: str) -> str:
-    return " ".join(value.lower().split())
 
 def _parse_language_preferences(value: str | None, *, default: tuple[str, ...] = ("de", "en")) -> list[str]:
     raw_parts = [part.strip().lower() for part in (value or "").split(",") if part and part.strip()]
@@ -299,37 +286,6 @@ def _remote_image_url(card_data: dict) -> str | None:
     first_image = images[0]
     return _proxy_remote_image_url(first_image.get("image_url_small") or first_image.get("image_url"))
 
-def _derive_card_number(set_code: str | None) -> str | None:
-    if not set_code or "-" not in set_code:
-        return None
-    return set_code.rsplit("-", 1)[-1] or None
-
-def _derive_print_language(set_code: str | None) -> str:
-    if not set_code or "-" not in set_code:
-        return "en"
-
-    segment = set_code.split("-", 1)[-1].upper()
-    match = re.match(r"([A-Z]{2,3})", segment)
-    token = match.group(1) if match else ""
-
-    if token.startswith("EN"):
-        return "en"
-    if token.startswith("DE"):
-        return "de"
-    if token.startswith("FR"):
-        return "fr"
-    if token.startswith("IT"):
-        return "it"
-    if token.startswith("SP") or token.startswith("ES"):
-        return "es"
-    if token.startswith("PT"):
-        return "pt"
-    if token.startswith("JP"):
-        return "jp"
-    if token.startswith("KR"):
-        return "ko"
-    return "en"
-
 def _resolve_default_remote_price(card_data: dict) -> tuple[float | None, str | None, str | None]:
     prices = card_data.get("prices", {}) or {}
     cardmarket_price = parse_positive_price(prices.get("cardmarket_price"))
@@ -356,38 +312,12 @@ def _build_print_label(
     parts = [part for part in [set_name, set_code, rarity, variant_name] if part]
     return " | ".join(parts) if parts else "Unbekannter Druck"
 
-def _normalize_lookup_value(value: str | None) -> str:
-    if not value:
-        return ""
-    return re.sub(r"[^a-z0-9]", "", value.lower())
-
 def _card_numbers_match(left: str | None, right: str | None) -> bool:
-    normalized_left = _normalize_lookup_value(left)
-    normalized_right = _normalize_lookup_value(right)
+    normalized_left = normalize_lookup_value(left)
+    normalized_right = normalize_lookup_value(right)
     if not normalized_left or not normalized_right:
         return False
     return normalized_left == normalized_right or normalized_left.endswith(normalized_right) or normalized_right.endswith(normalized_left)
-
-def _set_code_language_neutral_signature(set_code: str | None) -> tuple[str, str] | None:
-    normalized_set_code = (set_code or "").strip().upper()
-    if "-" not in normalized_set_code:
-        return None
-    series, suffix = normalized_set_code.split("-", 1)
-    match = re.match(r"([A-Z]{2,3})([A-Z0-9-]+)$", suffix)
-    if not match:
-        return None
-    return _normalize_lookup_value(series), _normalize_lookup_value(match.group(2))
-
-def _set_codes_match_language_neutral(left: str | None, right: str | None) -> bool:
-    normalized_left = _normalize_lookup_value(left)
-    normalized_right = _normalize_lookup_value(right)
-    if not normalized_left or not normalized_right:
-        return False
-    if normalized_left == normalized_right:
-        return True
-    left_signature = _set_code_language_neutral_signature(left)
-    right_signature = _set_code_language_neutral_signature(right)
-    return bool(left_signature and right_signature and left_signature == right_signature)
 
 def _cardmarket_variant_number(value: str | None) -> int | None:
     match = re.search(r"V\.?\s*-?\s*(\d+)", value or "", flags=re.IGNORECASE)

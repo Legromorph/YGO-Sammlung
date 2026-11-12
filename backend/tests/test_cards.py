@@ -6,14 +6,14 @@ from unittest.mock import AsyncMock
 
 from app.models import InventoryItem
 from app.schemas import CardPayload
-from app.services.cards import (
-    _fetch_remote_card_for_languages,
+from app.domain.print_codes import normalize_name
+from app.services.card_common import (
     _is_exact_inventory_duplicate_candidate,
     _normalize_language_code,
     _normalize_tags,
     _validate_set_code_language,
-    normalize_name,
 )
+from app.services.card_lookup import _fetch_remote_card_for_languages
 
 
 class CardManagementTests(unittest.TestCase):
