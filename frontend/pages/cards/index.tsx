@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
@@ -61,6 +62,7 @@ function isDuplicateCardConflict(value: unknown): value is DuplicateCardConflict
 }
 
 export default function CardsPage() {
+  const router = useRouter();
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -131,6 +133,22 @@ export default function CardsPage() {
       active = false;
     };
   }, []);
+
+  // Deep links from the dashboard: /cards?add=1 opens the dialog, /cards?has_price=no filters.
+  useEffect(() => {
+    if (!router.isReady) {
+      return;
+    }
+    const { add, has_price: hasPriceQuery } = router.query;
+    if (hasPriceQuery === 'yes' || hasPriceQuery === 'no') {
+      setHasPrice(hasPriceQuery);
+    }
+    if (add === '1') {
+      openCreateDialog();
+      void router.replace('/cards', undefined, { shallow: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.isReady]);
 
   const openCreateDialog = () => {
     setEditingCard(null);
@@ -222,7 +240,7 @@ export default function CardsPage() {
         description="Inventar durchsuchen, Preise prüfen und Karten bearbeiten."
         action={
           <Button startIcon={<AddRoundedIcon />} variant="contained" onClick={openCreateDialog}>
-            Karte anlegen
+            Karte hinzufügen
           </Button>
         }
       />

@@ -538,7 +538,6 @@ class DashboardTrendItem(BaseModel):
     last_priced_at: datetime | None = None
     last_price_source: str | None = None
     last_price_match_quality: str | None = None
-    review_reasons: list[str] = Field(default_factory=list)
 
 
 class DashboardValuePoint(BaseModel):
@@ -552,15 +551,16 @@ class DashboardResponse(BaseModel):
     distinct_items: int
     total_value: float
     priced_cards: int
-    cards_with_images: int
+    purchase_value: float = 0.0
+    purchase_value_market: float = 0.0
     value_history: list[DashboardValuePoint]
     top_gainers: list[DashboardTrendItem]
     top_losers: list[DashboardTrendItem]
-    trending_cards: list[DashboardTrendItem]
-    missing_price_cards: list[DashboardTrendItem]
-    review_candidates: list[DashboardTrendItem]
-    recent_price_updates: list[DashboardTrendItem]
-    recent_jobs: list[SyncJobResponse]
+    most_valuable_cards: list[DashboardTrendItem]
+    missing_price_count: int = 0
+    uncertain_price_count: int = 0
+    stale_price_count: int = 0
+    failed_jobs_count: int = 0
     display_currency: str = "EUR"
 
 

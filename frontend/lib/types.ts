@@ -506,7 +506,6 @@ export interface DashboardTrendItem {
   last_priced_at?: string | null;
   last_price_source?: string | null;
   last_price_match_quality?: string | null;
-  review_reasons?: string[];
 }
 
 export interface DashboardValuePoint {
@@ -545,15 +544,16 @@ export interface DashboardResponse {
   distinct_items: number;
   total_value: number;
   priced_cards: number;
-  cards_with_images: number;
+  purchase_value: number;
+  purchase_value_market: number;
   value_history: DashboardValuePoint[];
   top_gainers: DashboardTrendItem[];
   top_losers: DashboardTrendItem[];
-  trending_cards: DashboardTrendItem[];
-  missing_price_cards: DashboardTrendItem[];
-  review_candidates: DashboardTrendItem[];
-  recent_price_updates: DashboardTrendItem[];
-  recent_jobs: SyncJob[];
+  most_valuable_cards: DashboardTrendItem[];
+  missing_price_count: number;
+  uncertain_price_count: number;
+  stale_price_count: number;
+  failed_jobs_count: number;
   display_currency: string;
 }
 

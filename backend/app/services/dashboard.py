@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from urllib.parse import quote
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -15,14 +15,12 @@ from app.integrations.cardmarket import (
     CARDMARKET_MATCH_EXACT_VARIANT,
     CARDMARKET_MATCH_MANUAL,
     CARDMARKET_MATCH_SET_NAME,
-    normalize_cardmarket_product_url,
 )
 from app.integrations.price_values import parse_positive_price
 from app.models import CardPrint, InventoryItem, PriceHistory, SyncJob
 from app.schemas import DashboardResponse, DashboardTrendItem, DashboardValuePoint
 from app.services.app_settings import get_app_settings
 from app.services.currency import convert_amount
-from app.services.sync import serialize_sync_job
 from app.time_utils import utc_now
 
 _SAFE_PRICE_MATCH_QUALITIES = {
@@ -53,7 +51,6 @@ async def _dashboard_item(
     item: InventoryItem,
     *,
     display_currency: str,
-    review_reasons: list[str] | None = None,
 ) -> DashboardTrendItem:
     market_price = parse_positive_price(item.current_market_price)
     converted_price = await convert_amount(market_price, item.current_price_currency, display_currency)
@@ -78,28 +75,19 @@ async def _dashboard_item(
         last_priced_at=item.last_priced_at,
         last_price_source=item.last_price_source,
         last_price_match_quality=item.last_price_match_quality,
-        review_reasons=review_reasons or [],
     )
 
 
-def _review_reasons(item: InventoryItem) -> list[str]:
-    reasons: list[str] = []
-    now = utc_now()
-    exact_cardmarket_url = normalize_cardmarket_product_url(item.card_print.cardmarket_product_url)
+def _has_uncertain_price(item: InventoryItem) -> bool:
+    return bool(
+        parse_positive_price(item.current_market_price) is not None
+        and item.last_price_match_quality
+        and item.last_price_match_quality not in _SAFE_PRICE_MATCH_QUALITIES
+    )
 
-    if parse_positive_price(item.current_market_price) is None:
-        reasons.append("Kein Preis")
 
-    if item.last_price_match_quality and item.last_price_match_quality not in _SAFE_PRICE_MATCH_QUALITIES:
-        reasons.append("Unsicherer Match")
-
-    if item.last_priced_at and item.last_priced_at < now - timedelta(days=30):
-        reasons.append("Veraltete Daten")
-
-    if not exact_cardmarket_url:
-        reasons.append("Print prüfen")
-
-    return list(dict.fromkeys(reasons))
+def _has_stale_price(item: InventoryItem, now) -> bool:
+    return bool(item.last_priced_at and item.last_priced_at < now - timedelta(days=30))
 
 
 async def _display_price_value(
@@ -169,6 +157,7 @@ def _price_change_value(item: InventoryItem) -> float:
 async def get_dashboard(db: AsyncSession) -> DashboardResponse:
     app_settings = await get_app_settings(db)
     display_currency = app_settings.preferred_currency
+    now = utc_now()
     items_result = await db.execute(
         select(InventoryItem)
         .options(
@@ -181,83 +170,47 @@ async def get_dashboard(db: AsyncSession) -> DashboardResponse:
     inventory_items = items_result.scalars().unique().all()
 
     total_cards = sum(item.quantity for item in inventory_items)
-    distinct_items = len(inventory_items)
     total_value = 0.0
-    priced_cards = 0
+    priced_items = 0
+    purchase_value = 0.0
+    purchase_value_market = 0.0
+    item_values: dict[int, float] = {}
     for item in inventory_items:
-        market_price = parse_positive_price(item.current_market_price)
-        converted_price = await _display_price_value(market_price, item.current_price_currency, display_currency)
+        converted_price = await _display_price_value(parse_positive_price(item.current_market_price), item.current_price_currency, display_currency)
         if converted_price is not None:
-            total_value += converted_price * item.quantity
-            priced_cards += 1
-    cards_with_images = sum(1 for item in inventory_items if any(asset.status == "downloaded" and asset.local_path for asset in item.card_print.image_assets))
+            item_values[item.id] = converted_price * item.quantity
+            total_value += item_values[item.id]
+            priced_items += 1
+        if item.purchase_price is not None:
+            purchase_value += float(item.purchase_price) * item.quantity
+            purchase_value_market += item_values.get(item.id, 0.0)
 
-    gainers = [item for item in inventory_items if (item.price_change_7d or 0) > 0 and parse_positive_price(item.current_market_price) is not None]
-    losers = [item for item in inventory_items if (item.price_change_7d or 0) < 0 and parse_positive_price(item.current_market_price) is not None]
-    trending = [
-        item
-        for item in inventory_items
-        if parse_positive_price(item.current_market_price) is not None
-        and (abs(item.trend_score or 0) >= 10 or abs(item.price_change_7d or 0) >= 15)
-    ]
-    missing_price = [item for item in inventory_items if parse_positive_price(item.current_market_price) is None]
-    review_candidates = [item for item in inventory_items if _review_reasons(item)]
+    priced = [item for item in inventory_items if item.id in item_values]
+    gainers = sorted((item for item in priced if (item.price_change_7d or 0) > 0), key=lambda item: item.price_change_7d or 0, reverse=True)
+    losers = sorted((item for item in priced if (item.price_change_7d or 0) < 0), key=lambda item: item.price_change_7d or 0)
+    most_valuable = sorted(priced, key=lambda item: item_values[item.id], reverse=True)
 
-    gainers = sorted(gainers, key=lambda item: (_price_change_value(item), item.trend_score or 0), reverse=True)
-    losers = sorted(losers, key=lambda item: (_price_change_value(item), item.trend_score or 0))
-    trending = sorted(trending, key=lambda item: (abs(item.trend_score or 0), abs(item.price_change_7d or 0)), reverse=True)
-    missing_price = sorted(missing_price, key=lambda item: (item.last_priced_at or datetime.min, item.updated_at), reverse=True)
-    review_candidates = sorted(
-        review_candidates,
-        key=lambda item: (
-            100 if parse_positive_price(item.current_market_price) is None else 0,
-            50 if item.last_price_match_quality and item.last_price_match_quality not in _SAFE_PRICE_MATCH_QUALITIES else 0,
-            30 if item.last_priced_at and item.last_priced_at < utc_now() - timedelta(days=30) else 0,
-            10 if not normalize_cardmarket_product_url(item.card_print.cardmarket_product_url) else 0,
-        ),
-        reverse=True,
+    failed_jobs_count = await db.scalar(
+        select(func.count(SyncJob.id)).where(SyncJob.status == "failed", SyncJob.created_at >= now - timedelta(days=7))
     )
 
-    recent_price_update_candidates = sorted(
-        [item for item in inventory_items if item.last_priced_at is not None],
-        key=lambda item: item.last_priced_at or datetime.min,
-        reverse=True,
-    )
-
-    recent_history_result = await db.execute(
-        select(PriceHistory)
-        .where(PriceHistory.price > 0)
-        .options(selectinload(PriceHistory.inventory_item).selectinload(InventoryItem.card_print).selectinload(CardPrint.card))
-        .order_by(PriceHistory.captured_at.desc())
-        .limit(12)
-    )
-    recent_history = recent_history_result.scalars().all()
-    recent_item_ids = {history.inventory_item_id for history in recent_history}
-    recent_price_updates = [item for item in recent_price_update_candidates if item.id in recent_item_ids] or recent_price_update_candidates
-
-    recent_jobs_result = await db.execute(select(SyncJob).order_by(SyncJob.created_at.desc()).limit(8))
-    recent_jobs = recent_jobs_result.scalars().all()
-
-    top_gainers = [await _dashboard_item(item, display_currency=display_currency) for item in gainers[:5]]
-    top_losers = [await _dashboard_item(item, display_currency=display_currency) for item in losers[:5]]
-    trending_cards = [await _dashboard_item(item, display_currency=display_currency) for item in trending[:6]]
-    missing_price_cards = [await _dashboard_item(item, display_currency=display_currency) for item in missing_price[:6]]
-    review_cards = [await _dashboard_item(item, display_currency=display_currency, review_reasons=_review_reasons(item)) for item in review_candidates[:6]]
-    recent_cards = [await _dashboard_item(item, display_currency=display_currency) for item in recent_price_updates[:8]]
+    async def serialize(items: list[InventoryItem], limit: int) -> list[DashboardTrendItem]:
+        return [await _dashboard_item(item, display_currency=display_currency) for item in items[:limit]]
 
     return DashboardResponse(
         total_cards=total_cards,
-        distinct_items=distinct_items,
-        total_value=total_value,
-        priced_cards=priced_cards,
-        cards_with_images=cards_with_images,
+        distinct_items=len(inventory_items),
+        total_value=round(total_value, 2),
+        priced_cards=priced_items,
+        purchase_value=round(purchase_value, 2),
+        purchase_value_market=round(purchase_value_market, 2),
         value_history=await _value_history(db, inventory_items),
-        top_gainers=top_gainers,
-        top_losers=top_losers,
-        trending_cards=trending_cards,
-        missing_price_cards=missing_price_cards,
-        review_candidates=review_cards,
-        recent_price_updates=recent_cards,
-        recent_jobs=[serialize_sync_job(job) for job in recent_jobs],
+        top_gainers=await serialize(gainers, 5),
+        top_losers=await serialize(losers, 5),
+        most_valuable_cards=await serialize(most_valuable, 8),
+        missing_price_count=len(inventory_items) - priced_items,
+        uncertain_price_count=sum(1 for item in inventory_items if _has_uncertain_price(item)),
+        stale_price_count=sum(1 for item in inventory_items if _has_stale_price(item, now)),
+        failed_jobs_count=int(failed_jobs_count or 0),
         display_currency=display_currency,
     )

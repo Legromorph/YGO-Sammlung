@@ -689,7 +689,14 @@ export default function SetImportPage() {
               </>
             ) : null}
           </Stack>
-          <Button color="inherit" disabled={!totalQuantity || saving} onClick={() => setQuantities({})}>
+          <Button
+            color="inherit"
+            disabled={!totalQuantity || saving}
+            onClick={() => {
+              setQuantities({});
+              setLastAdded(null);
+            }}
+          >
             Leeren
           </Button>
           <Button

@@ -182,7 +182,7 @@ docker run --rm -v ygo-sammlung_card_media:/media -v "$PWD/backups:/backups:ro" 
 
 ## Frontend-Funktionen
 
-- Dashboard mit KPIs, Wertverlauf, Preisgewinnern, Preisverlierern und Review-Kandidaten
+- Übersicht mit Schnellaktionen, vier Kennzahlen (Wert, Karten, Bilanz ggü. Einkauf, Preisabdeckung), Wertverlauf, „Braucht Aufmerksamkeit“, wertvollsten Karten und Preisbewegungen
 - Kartenliste mit Filterpanel, Pagination, Preisindikatoren, Edit-/Delete-Aktionen
 - Display-/Set-Erfassung mit Schnellerfassung per Kartennummer und automatischer Kaufpreis-Verteilung
 - Karten-Detailseite mit Preisverlauf und Source-Mappings
