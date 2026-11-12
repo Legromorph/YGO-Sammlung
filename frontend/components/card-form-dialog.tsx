@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -11,6 +11,7 @@ import {
   MenuItem,
   Stack,
   TextField,
+  Tooltip,
   useMediaQuery,
   useTheme,
 } from '@mui/material';
@@ -58,8 +59,10 @@ interface CardFormDialogProps {
   storageLocations: StorageLocation[];
   loading?: boolean;
   submitError?: string | null;
+  /** Shown after "Speichern & Alternative": the card was saved, the form stays open. */
+  successMessage?: string | null;
   onClose: () => void;
-  onSubmit: (payload: CardPayload) => Promise<void>;
+  onSubmit: (payload: CardPayload, options?: { keepOpen?: boolean }) => Promise<void>;
 }
 
 
@@ -70,9 +73,12 @@ export default function CardFormDialog({
   storageLocations,
   loading = false,
   submitError = null,
+  successMessage = null,
   onClose,
   onSubmit,
 }: CardFormDialogProps) {
+  const isCreate = !initialValue;
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const { settings } = useAppSettings();
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
@@ -515,7 +521,14 @@ export default function CardFormDialog({
     });
   };
 
-  const handleSubmit = async () => {
+  useEffect(() => {
+    // After "Speichern & Alternative" jump back to the top, where name and language live.
+    if (successMessage) {
+      contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [successMessage]);
+
+  const handleSubmit = async (options?: { keepOpen?: boolean }) => {
     if (setCodeLanguageError) {
       return;
     }
@@ -546,7 +559,7 @@ export default function CardFormDialog({
         ...(manualCardmarketUrl || form.cardmarket_reference ? { cardmarket: (manualCardmarketUrl || form.cardmarket_reference || '').trim() } : {}),
       },
       link_arrows: form.link_arrows || [],
-    });
+    }, options);
   };
 
   const handleSetGroupChange = (groupKey: string) => {
@@ -609,11 +622,13 @@ export default function CardFormDialog({
   return (
     <Dialog open={open} onClose={onClose} fullWidth fullScreen={fullScreen} maxWidth="md">
       <DialogTitle>{title}</DialogTitle>
-      <DialogContent dividers sx={{ px: { xs: 2, sm: 3 } }}>
+      <DialogContent ref={contentRef} dividers sx={{ px: { xs: 2, sm: 3 } }}>
         <Stack spacing={2.25} sx={{ mt: 0.25 }}>
           {lookupError ? <Alert severity="error">{lookupError}</Alert> : null}
 
           {submitError ? <Alert severity="error">{submitError}</Alert> : null}
+
+          {successMessage && !submitError ? <Alert severity="success">{successMessage}</Alert> : null}
 
           <Grid container spacing={2} sx={{ mt: 0.1 }}>
             <CardLookupFields
@@ -636,6 +651,7 @@ export default function CardFormDialog({
               setCode={form.set_code}
               rarity={form.rarity}
               setCodeLanguageError={setCodeLanguageError}
+              autoFocusName={isCreate}
               languageField={
                 <TextField select label="Sprache" fullWidth value={form.language} onChange={(event) => handleLanguageChange(event.target.value)}>
                   <MenuItem value="de">Deutsch</MenuItem>
@@ -692,7 +708,16 @@ export default function CardFormDialog({
         <Button onClick={onClose} disabled={loading}>
           Abbrechen
         </Button>
-        <Button onClick={handleSubmit} variant="contained" disabled={submitDisabled}>
+        {isCreate ? (
+          <Tooltip title="Speichert die Karte und lässt das Fenster offen. So kannst du z. B. die Sprache ändern und sofort eine weitere Kopie speichern.">
+            <span>
+              <Button onClick={() => void handleSubmit({ keepOpen: true })} variant="outlined" disabled={submitDisabled}>
+                Speichern &amp; Alternative
+              </Button>
+            </span>
+          </Tooltip>
+        ) : null}
+        <Button onClick={() => void handleSubmit()} variant="contained" disabled={submitDisabled}>
           Speichern
         </Button>
       </DialogActions>

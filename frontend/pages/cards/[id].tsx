@@ -32,7 +32,7 @@ import {
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 import CardFormDialog from '../../components/card-form-dialog';
-import { CONDITION_OPTIONS } from '../../components/card-form/inventory-fields';
+import { conditionLabel } from '../../components/card-form/inventory-fields';
 import CardMetadataList from '../../components/card-metadata-list';
 import api, { getApiErrorMessage, resolveMediaUrl } from '../../lib/api';
 import { formatCurrency, formatDate, formatPercent } from '../../lib/format';
@@ -90,10 +90,6 @@ function ValueTile({ label, children }: { label: string; children: ReactNode }) 
       <Box sx={{ mt: 0.75 }}>{children}</Box>
     </Paper>
   );
-}
-
-function conditionLabel(value: string | null | undefined): string {
-  return CONDITION_OPTIONS.find((option) => option.value === value)?.label || value || '';
 }
 
 export default function CardDetailPage() {

@@ -25,6 +25,10 @@ export const CONDITION_OPTIONS = [
   { value: 'poor', label: 'Poor' },
 ];
 
+export function conditionLabel(value: string | null | undefined): string {
+  return CONDITION_OPTIONS.find((option) => option.value === value)?.label || value || '';
+}
+
 interface InventoryFieldsProps {
   visible: boolean;
   form: CardPayload;
@@ -143,6 +147,8 @@ export default function InventoryFields({
       <Grid item xs={12} md={3}>
         <TextField
           label="Einkaufspreis (Stück)"
+          placeholder="optional"
+          InputLabelProps={{ shrink: true }}
           type="number"
           fullWidth
           value={form.purchase_price ?? ''}

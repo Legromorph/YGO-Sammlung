@@ -32,6 +32,7 @@ import {
 } from '@mui/material';
 
 import CardFormDialog from '../../components/card-form-dialog';
+import { conditionLabel } from '../../components/card-form/inventory-fields';
 import PageHeader from '../../components/page-header';
 import api, { buildQuery, getApiErrorMessage, resolveMediaUrl } from '../../lib/api';
 import { formatCurrency, formatPercent } from '../../lib/format';
@@ -61,6 +62,12 @@ function isDuplicateCardConflict(value: unknown): value is DuplicateCardConflict
   return candidate.code === 'duplicate_card' && typeof candidate.existing_item_id === 'number' && typeof candidate.existing_quantity === 'number';
 }
 
+function describeSavedCard(payload: CardPayload): string {
+  const details = [payload.language?.toUpperCase(), payload.set_code || payload.set_name, payload.rarity].filter(Boolean).join(' · ');
+  const quantity = Number(payload.quantity) > 1 ? `${payload.quantity}× ` : '';
+  return `${quantity}${payload.name}${details ? ` (${details})` : ''}`;
+}
+
 export default function CardsPage() {
   const router = useRouter();
   const [cards, setCards] = useState<CardSummary[]>([]);
@@ -84,6 +91,8 @@ export default function CardsPage() {
   const [duplicateConflict, setDuplicateConflict] = useState<DuplicateCardConflict | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const [pendingKeepOpen, setPendingKeepOpen] = useState(false);
 
   const loadCards = async () => {
     setLoading(true);
@@ -151,6 +160,8 @@ export default function CardsPage() {
   }, [router.isReady]);
 
   const openCreateDialog = () => {
+    setSaveNotice(null);
+    setSaveError(null);
     setEditingCard(null);
     setDuplicateConflict(null);
     setPendingCreatePayload(null);
@@ -160,6 +171,8 @@ export default function CardsPage() {
   const openEditDialog = async (cardId: number) => {
     try {
       const response = await api.get<CardDetail>(`/cards/${cardId}`);
+      setSaveNotice(null);
+      setSaveError(null);
       setEditingCard(response.data);
       setDuplicateConflict(null);
       setPendingCreatePayload(null);
@@ -169,7 +182,8 @@ export default function CardsPage() {
     }
   };
 
-  const handleSave = async (payload: CardPayload) => {
+  const handleSave = async (payload: CardPayload, options?: { keepOpen?: boolean }) => {
+    const keepOpen = !editingCard && Boolean(options?.keepOpen);
     setSaving(true);
     setSaveError(null);
     try {
@@ -177,6 +191,11 @@ export default function CardsPage() {
         await api.put(`/cards/${editingCard.id}`, payload);
       } else {
         await api.post('/cards/', payload);
+      }
+      if (keepOpen) {
+        setSaveNotice(`${describeSavedCard(payload)} gespeichert. Ändere jetzt z. B. die Sprache und speichere die nächste Kopie.`);
+        await loadCards();
+        return;
       }
       setDialogOpen(false);
       setEditingCard(null);
@@ -187,6 +206,7 @@ export default function CardsPage() {
       if (!editingCard && axios.isAxiosError(requestError) && requestError.response?.status === 409) {
         const detail = requestError.response?.data?.detail;
         if (isDuplicateCardConflict(detail)) {
+          setPendingKeepOpen(keepOpen);
           setPendingCreatePayload(payload);
           setDuplicateConflict(detail);
           return;
@@ -210,8 +230,12 @@ export default function CardsPage() {
       });
       setDuplicateConflict(null);
       setPendingCreatePayload(null);
-      setDialogOpen(false);
-      setEditingCard(null);
+      if (pendingKeepOpen) {
+        setSaveNotice(`Menge erhöht: ${describeSavedCard(pendingCreatePayload)}. Du kannst direkt die nächste Kopie speichern.`);
+      } else {
+        setDialogOpen(false);
+        setEditingCard(null);
+      }
       await loadCards();
     } catch (requestError) {
       setError(getApiErrorMessage(requestError));
@@ -268,7 +292,7 @@ export default function CardsPage() {
             <MenuItem value="">Alle</MenuItem>
             {(filters?.conditions || []).map((option) => (
               <MenuItem key={option} value={option}>
-                {option}
+                {conditionLabel(option)}
               </MenuItem>
             ))}
           </TextField>
@@ -339,7 +363,7 @@ export default function CardsPage() {
                             </Typography>
                             <Stack direction="row" spacing={0.75} sx={{ mt: 0.75 }} flexWrap="wrap" useFlexGap>
                               {card.rarity ? <Chip label={card.rarity} size="small" variant="outlined" /> : null}
-                              <Chip label={card.condition} size="small" color="secondary" variant="outlined" />
+                              <Chip label={conditionLabel(card.condition)} size="small" color="secondary" variant="outlined" />
                               <Tooltip title={pricingTooltip || 'Kein Preisstatus vorhanden'}>
                                 <Chip label={pricingLabel(card.pricing)} size="small" color={pricingColor(card.pricing)} variant="outlined" />
                               </Tooltip>
@@ -444,8 +468,10 @@ export default function CardsPage() {
         storageLocations={filters?.storage_locations || []}
         loading={saving || duplicateSaveLoading}
         submitError={saveError}
+        successMessage={saveNotice}
         onClose={() => {
           setSaveError(null);
+          setSaveNotice(null);
           setDialogOpen(false);
           setEditingCard(null);
           setDuplicateConflict(null);

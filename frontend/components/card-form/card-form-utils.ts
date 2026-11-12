@@ -222,7 +222,8 @@ function translatePrintOptionLanguage(
   return {
     ...option,
     set_code: translatedSetCode,
-    card_number: option.card_number || trimValue(translatedSetCode?.split('-').pop()),
+    // The card number carries the language too (EN020 -> DE020), so derive it from the translated code.
+    card_number: (translatedSetCode?.includes('-') ? trimValue(translatedSetCode.split('-').pop()) : undefined) || option.card_number,
   };
 }
 

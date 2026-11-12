@@ -48,6 +48,7 @@ interface CardLookupFieldsProps {
   rarity?: string | null;
   setCodeLanguageError: string | null;
   languageField?: ReactNode;
+  autoFocusName?: boolean;
   onNameInputChange: (value: string, reason: string) => void;
   onSuggestionChange: (option: CardLookupSuggestion | string | null) => void;
   onSetGroupChange: (groupKey: string) => void;
@@ -80,6 +81,7 @@ export default function CardLookupFields({
   rarity,
   setCodeLanguageError,
   languageField,
+  autoFocusName = false,
   onNameInputChange,
   onSuggestionChange,
   onSetGroupChange,
@@ -165,6 +167,7 @@ export default function CardLookupFields({
             <TextField
               {...params}
               label="Kartenname"
+              autoFocus={autoFocusName}
               helperText={
                 lookupData
                   ? undefined

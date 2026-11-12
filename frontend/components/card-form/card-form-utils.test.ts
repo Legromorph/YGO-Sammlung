@@ -4,6 +4,7 @@ import {
   buildSearchLanguageQuery,
   buildSetCodeForLanguage,
   buildVariantKey,
+  getLanguageAwarePrintOptions,
   normalizeOptionalPositiveNumber,
   sanitizeSelection,
   validateSetCodeLanguage,
@@ -25,6 +26,12 @@ describe('card form helpers', () => {
   it('übersetzt den Sprachanteil eines Setcodes', () => {
     expect(buildSetCodeForLanguage('RA05-EN080', 'de')).toBe('RA05-DE080');
     expect(validateSetCodeLanguage('de', 'RA05-EN080')).toContain('Erwartet');
+  });
+
+  it('übersetzt bei fehlendem Sprachdruck auch die Kartennummer', () => {
+    const [translated] = getLanguageAwarePrintOptions([printOption], 'de');
+    expect(translated.set_code).toBe('RA05-DE080');
+    expect(translated.card_number).toBe('DE080');
   });
 
   it('löst eine eindeutige Druckvariante auf', () => {
