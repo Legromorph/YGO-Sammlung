@@ -28,13 +28,13 @@ Docker-basierte Webanwendung zur Verwaltung einer Yu-Gi-Oh!-Kartensammlung mit F
 │  │  ├─ api/endpoints/
 │  │  ├─ integrations/
 │  │  ├─ services/
-│  │  ├─ celery_app.py
 │  │  ├─ config.py
 │  │  ├─ database.py
+│  │  ├─ job_scheduler.py
+│  │  ├─ job_worker.py
 │  │  ├─ main.py
 │  │  ├─ models.py
-│  │  ├─ schemas.py
-│  │  └─ worker.py
+│  │  └─ schemas.py
 │  ├─ Dockerfile
 │  ├─ requirements.txt
 │  └─ seed.py
@@ -96,12 +96,12 @@ Bei jedem Push auf `main` veröffentlicht GitHub Actions zwei Multi-Arch-Images 
 - `ghcr.io/legromorph/ygo-sammlung-backend:latest`
 - `ghcr.io/legromorph/ygo-sammlung-frontend:latest`
 
-Backend, Worker und Scheduler verwenden dasselbe Backend-Image. PostgreSQL, Redis,
-Backups und lokale Daten werden nicht in GHCR veröffentlicht.
+Backend, Worker und Scheduler verwenden dasselbe Backend-Image. PostgreSQL,
+Backups und lokale Daten werden nicht in GHCR veröffentlicht. Redis wird nicht
+mehr benötigt; ein vorhandener Redis-Dienst und `REDIS_URL` können entfernt werden.
 
 Für Dockhand steht [docker-compose.ghcr.yml](docker-compose.ghcr.yml) bereit. Diese
-Datei enthält bewusst keine Datenbank und keinen Redis-Dienst. Beide Dienste müssen
-vom Server erreichbar sein; ihre URLs sowie die öffentliche Frontend-Adresse werden
+Datei enthält bewusst keine Datenbank. Sie muss vom Server erreichbar sein; ihre URL sowie die öffentliche Frontend-Adresse werden
 in Dockhand als Umgebungsvariablen gesetzt. Die benötigten Namen zeigt
 [.env.dockhand.example](.env.dockhand.example).
 

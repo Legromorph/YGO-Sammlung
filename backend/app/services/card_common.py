@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.integrations.cardmarket import CardmarketPrintContext, CardmarketResolvedProduct
 from app.integrations.cardmarket.set_slug_resolver import cardmarket_set_code_family
-from app.integrations.cardmarket_links import (
+from app.integrations.cardmarket import (
     CARDMARKET_MATCH_AMBIGUOUS,
     CARDMARKET_MATCH_EXACT,
     CARDMARKET_MATCH_EXACT_VARIANT,

@@ -92,22 +92,6 @@ export default function CardDetailPage() {
   const cardmarketLinkDraftIsValid = isCardmarketProductUrl(trimmedCardmarketLinkDraft);
   const cardmarketLinkDraftMatchesStored = trimmedCardmarketLinkDraft === (cardmarketLink || '');
   const cardmarketLinkIsManuallyConfirmed = cardmarketLinkQuality === 'manual_verified' && cardmarketLinkDraftMatchesStored;
-  const medianTop5Price = latestSnapshot?.market_price_median_top5 ?? latestSnapshot?.selected_market_price ?? null;
-  const offersConsideredCount = latestSnapshot?.offers_considered_count ?? latestSnapshot?.offer_count_considered ?? null;
-  const top5OfferPrices = latestSnapshot?.top5_offer_prices?.length ? latestSnapshot.top5_offer_prices : latestSnapshot?.raw_offer_prices_sample ?? [];
-  const hasCardmarketOfferData = Boolean(
-    latestSnapshot
-    && [
-      latestSnapshot.lowest_offer_price,
-      medianTop5Price,
-      latestSnapshot.avg_1d,
-      latestSnapshot.avg_7d,
-      latestSnapshot.avg_30d,
-      latestSnapshot.price_trend,
-      offersConsideredCount,
-      ...top5OfferPrices,
-    ].some((value) => value !== null && value !== undefined),
-  );
 
   useEffect(() => {
     if (!router.query.id) {
@@ -463,40 +447,6 @@ export default function CardDetailPage() {
                   </StatusRow>
                 ) : null}
 
-                {hasCardmarketOfferData && latestSnapshot ? (
-                  <>
-                    <Divider sx={{ my: 0.75 }} />
-                    <Typography variant="subtitle2">Cardmarket-Angebotsdaten</Typography>
-                    {medianTop5Price !== null ? (
-                      <StatusRow label="Median Top 5">{formatCurrency(medianTop5Price, latestSnapshot.currency)}</StatusRow>
-                    ) : null}
-                    {latestSnapshot.lowest_offer_price !== null && latestSnapshot.lowest_offer_price !== undefined ? (
-                      <StatusRow label="Niedrigstes Angebot">
-                        {formatCurrency(latestSnapshot.lowest_offer_price, latestSnapshot.currency)}
-                      </StatusRow>
-                    ) : null}
-                    {latestSnapshot.avg_1d !== null && latestSnapshot.avg_1d !== undefined ? (
-                      <StatusRow label="1-Tages-Durchschnitt">{formatCurrency(latestSnapshot.avg_1d, latestSnapshot.currency)}</StatusRow>
-                    ) : null}
-                    {latestSnapshot.avg_7d !== null && latestSnapshot.avg_7d !== undefined ? (
-                      <StatusRow label="7-Tages-Durchschnitt">{formatCurrency(latestSnapshot.avg_7d, latestSnapshot.currency)}</StatusRow>
-                    ) : null}
-                    {latestSnapshot.avg_30d !== null && latestSnapshot.avg_30d !== undefined ? (
-                      <StatusRow label="30-Tages-Durchschnitt">{formatCurrency(latestSnapshot.avg_30d, latestSnapshot.currency)}</StatusRow>
-                    ) : null}
-                    {latestSnapshot.price_trend !== null && latestSnapshot.price_trend !== undefined ? (
-                      <StatusRow label="Preis-Trend">{formatCurrency(latestSnapshot.price_trend, latestSnapshot.currency)}</StatusRow>
-                    ) : null}
-                    {offersConsideredCount !== null ? (
-                      <StatusRow label="Berücksichtigte Angebote">{offersConsideredCount}</StatusRow>
-                    ) : null}
-                    {top5OfferPrices.length > 0 ? (
-                      <StatusRow label="Top-5-Angebote">
-                        {top5OfferPrices.map((price) => formatCurrency(price, latestSnapshot.currency)).join(', ')}
-                      </StatusRow>
-                    ) : null}
-                  </>
-                ) : null}
               </Stack>
 
               <Stack direction="row" spacing={1.5} sx={{ mt: 2, flexWrap: 'wrap' }} useFlexGap>
@@ -557,11 +507,6 @@ export default function CardDetailPage() {
                 </Alert>
               ) : null}
 
-              {latestSnapshot?.parse_status && latestSnapshot.parse_status !== 'ok' ? (
-                <Alert severity="info" sx={{ mt: 2 }}>
-                  Parser-Status: {latestSnapshot.parse_status}
-                </Alert>
-              ) : null}
             </Paper>
 
             <Paper sx={{ p: 2.5 }}>

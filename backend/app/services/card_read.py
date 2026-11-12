@@ -7,7 +7,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.integrations.cardmarket_links import (
+from app.integrations.cardmarket import (
     CARDMARKET_MATCH_AMBIGUOUS,
     CARDMARKET_MATCH_EXACT,
     CARDMARKET_MATCH_EXACT_VARIANT,
@@ -304,56 +304,9 @@ async def _display_price_value(
 
     return float(converted), None
 
-async def _display_optional_price_value(
-    value: float | int | Decimal | None,
-    source_currency: str | None,
-    target_currency: str,
-) -> float | None:
-    if value is None:
-        return None
-    converted, _note = await _display_price_value(value, source_currency, target_currency)
-    if converted is not None:
-        return float(converted)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-async def _display_price_sample_values(
-    values: list[float | int | Decimal | None] | None,
-    source_currency: str | None,
-    target_currency: str,
-) -> list[float]:
-    sample: list[float] = []
-    for value in values or []:
-        converted = await _display_optional_price_value(value, source_currency, target_currency)
-        if converted is not None:
-            sample.append(converted)
-    return sample
-
 async def _serialize_price_history_point(entry: PriceHistory, *, display_currency: str) -> PriceHistoryPoint:
     converted_price, conversion_note = await _display_price_value(entry.price, entry.currency, display_currency)
     payload = entry.payload or {}
-    lowest_offer_price = await _display_optional_price_value(payload.get("lowest_offer_price"), entry.currency, display_currency)
-    selected_market_price = await _display_optional_price_value(
-        payload.get("market_price_median_top5") if payload.get("market_price_median_top5") is not None else payload.get("selected_market_price"),
-        entry.currency,
-        display_currency,
-    )
-    price_trend = await _display_optional_price_value(payload.get("price_trend"), entry.currency, display_currency)
-    avg_1d = await _display_optional_price_value(payload.get("avg_1d"), entry.currency, display_currency)
-    avg_7d = await _display_optional_price_value(payload.get("avg_7d"), entry.currency, display_currency)
-    avg_30d = await _display_optional_price_value(payload.get("avg_30d"), entry.currency, display_currency)
-    top5_offer_prices = await _display_price_sample_values(
-        payload.get("top5_offer_prices") if payload.get("top5_offer_prices") is not None else payload.get("raw_offer_prices_sample"),
-        entry.currency,
-        display_currency,
-    )
-    raw_offer_prices_sample = await _display_price_sample_values(
-        payload.get("raw_offer_prices_sample") if payload.get("raw_offer_prices_sample") is not None else payload.get("top5_offer_prices"),
-        entry.currency,
-        display_currency,
-    )
 
     return PriceHistoryPoint(
         captured_at=entry.captured_at,
@@ -369,21 +322,7 @@ async def _serialize_price_history_point(entry: PriceHistory, *, display_currenc
         card_number=payload.get("matched_card_number") or payload.get("card_number"),
         rarity=payload.get("matched_rarity") or payload.get("rarity"),
         language=payload.get("matched_language") or payload.get("language"),
-        lowest_offer_price=lowest_offer_price,
-        selected_market_price=selected_market_price,
-        market_price_median_top5=selected_market_price,
         pricing_strategy_used=payload.get("pricing_strategy_used"),
-        offer_count_considered=payload.get("offers_considered_count") or payload.get("offer_count_considered"),
-        offers_considered_count=payload.get("offers_considered_count") or payload.get("offer_count_considered"),
-        outlier_detected=payload.get("outlier_detected"),
-        price_trend=price_trend,
-        avg_1d=avg_1d,
-        avg_7d=avg_7d,
-        avg_30d=avg_30d,
-        filters_used=payload.get("filters_used"),
-        parse_status=payload.get("parse_status"),
-        top5_offer_prices=top5_offer_prices,
-        raw_offer_prices_sample=raw_offer_prices_sample,
     )
 
 async def serialize_card_summary(

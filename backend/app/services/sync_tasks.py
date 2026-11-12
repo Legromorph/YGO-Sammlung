@@ -14,7 +14,7 @@ from app.database import session_scope
 from app.domain.card_metadata import apply_card_metadata, normalize_card_metadata
 from app.integrations.card_data import get_card_data_provider
 from app.integrations.images import get_active_image_provider
-from app.integrations.cardmarket_links import CARDMARKET_SAFE_MATCH_QUALITIES
+from app.integrations.cardmarket import CARDMARKET_SAFE_MATCH_QUALITIES
 from app.integrations.price_values import parse_positive_price
 from app.integrations.prices import get_active_price_provider
 from app.models import Card, CardPrint, ImageAsset, InventoryItem, PriceHistory, SourceMapping, SyncJob

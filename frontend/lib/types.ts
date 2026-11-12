@@ -37,21 +37,7 @@ export interface PriceHistoryPoint {
   card_number?: string | null;
   rarity?: string | null;
   language?: string | null;
-  lowest_offer_price?: number | null;
-  selected_market_price?: number | null;
-  market_price_median_top5?: number | null;
   pricing_strategy_used?: string | null;
-  offer_count_considered?: number | null;
-  offers_considered_count?: number | null;
-  outlier_detected?: boolean | null;
-  price_trend?: number | null;
-  avg_1d?: number | null;
-  avg_7d?: number | null;
-  avg_30d?: number | null;
-  filters_used?: Record<string, unknown> | null;
-  parse_status?: string | null;
-  top5_offer_prices?: number[];
-  raw_offer_prices_sample?: number[];
 }
 
 export interface SourceMapping {

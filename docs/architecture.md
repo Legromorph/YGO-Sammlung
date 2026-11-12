@@ -18,6 +18,7 @@
    - `card_data.py`
    - `prices.py`
    - `images.py`
+   - `cardmarket/` (Linkbau und Print-Kontext, keine Seitenabrufe)
    - `ygo_omega.py`
 
 5. Persistenz

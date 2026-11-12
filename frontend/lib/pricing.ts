@@ -187,8 +187,6 @@ export function priceSourceLabel(source?: string | null): string {
       return 'TCGPlayer-Kartenpreis via YGOPRODeck';
     case 'ygoprodeck:set_price':
       return 'YGOPRODeck-Printpreis';
-    case 'cardmarket:median_top5':
-      return 'Cardmarket Median Top 5';
     case 'cardmarket':
       return 'Cardmarket';
     case 'manual':

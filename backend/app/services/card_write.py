@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.domain.card_metadata import apply_card_metadata, normalize_card_metadata
-from app.integrations.cardmarket_links import (
+from app.integrations.cardmarket import (
     CARDMARKET_CATEGORY,
     CARDMARKET_MATCH_AMBIGUOUS,
     CARDMARKET_MATCH_FAILED,

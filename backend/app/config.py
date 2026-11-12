@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     api_prefix: str = "/api"
 
     database_url: str = "postgresql+asyncpg://ygo_user:ygo_password@db:5432/ygo_collection"
-    redis_url: str = "redis://redis:6379/0"
 
     cors_origins: str = "http://localhost:3000"
     frontend_origin: str = "http://localhost:3000"
@@ -29,7 +28,6 @@ class Settings(BaseSettings):
     request_timeout_seconds: int = 20
     cardmarket_variant_probe_max: int = 12
     price_allow_card_level_fallback: bool = True
-    sync_batch_size: int = 50
 
     price_monitor_night_window_start_hour: int = 1
     price_monitor_night_window_end_hour: int = 6

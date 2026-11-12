@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.integrations.cardmarket_links import (
+from app.integrations.cardmarket import (
     CARDMARKET_MATCH_AMBIGUOUS,
     CARDMARKET_MATCH_EXACT,
     CARDMARKET_MATCH_EXACT_VARIANT,

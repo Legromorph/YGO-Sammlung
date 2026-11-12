@@ -10,7 +10,7 @@ from app.integrations.cardmarket import (
     CardmarketResolvedProduct,
     get_cardmarket_product_resolver,
 )
-from app.integrations.cardmarket_links import (
+from app.integrations.cardmarket import (
     CARDMARKET_CATEGORY,
     CARDMARKET_MATCH_AMBIGUOUS,
     CARDMARKET_MATCH_FAILED,

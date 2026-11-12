@@ -66,21 +66,7 @@ class PriceHistoryPoint(BaseModel):
     card_number: str | None = None
     rarity: str | None = None
     language: str | None = None
-    lowest_offer_price: float | None = None
-    selected_market_price: float | None = None
-    market_price_median_top5: float | None = None
     pricing_strategy_used: str | None = None
-    offer_count_considered: int | None = None
-    offers_considered_count: int | None = None
-    outlier_detected: bool | None = None
-    price_trend: float | None = None
-    avg_1d: float | None = None
-    avg_7d: float | None = None
-    avg_30d: float | None = None
-    filters_used: dict[str, Any] | None = None
-    parse_status: str | None = None
-    top5_offer_prices: list[float] = Field(default_factory=list)
-    raw_offer_prices_sample: list[float] = Field(default_factory=list)
 
 
 class SourceMappingResponse(OrmSchema):
@@ -599,6 +585,5 @@ class SyncOverview(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     database: bool
-    redis: bool
     image_directory: bool
     active_providers: dict[str, str]

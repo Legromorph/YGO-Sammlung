@@ -63,8 +63,6 @@ from app.services.card_read import (
     _resolve_cardmarket_link,
     _build_pricing_status,
     _display_price_value,
-    _display_optional_price_value,
-    _display_price_sample_values,
     _serialize_price_history_point,
     serialize_card_summary,
     list_cards,

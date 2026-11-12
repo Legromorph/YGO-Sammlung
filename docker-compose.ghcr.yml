@@ -3,7 +3,6 @@ name: ygo-sammlung
 x-backend-environment: &backend-environment
   ENVIRONMENT: production
   DATABASE_URL: ${DATABASE_URL:?DATABASE_URL muss gesetzt sein}
-  REDIS_URL: ${REDIS_URL:?REDIS_URL muss gesetzt sein}
   CORS_ORIGINS: ${PUBLIC_FRONTEND_ORIGIN:?PUBLIC_FRONTEND_ORIGIN muss gesetzt sein}
   FRONTEND_ORIGIN: ${PUBLIC_FRONTEND_ORIGIN:?PUBLIC_FRONTEND_ORIGIN muss gesetzt sein}
   MEDIA_ROOT: /app/media
