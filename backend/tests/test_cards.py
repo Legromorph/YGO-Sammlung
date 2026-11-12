@@ -70,3 +70,13 @@ class CardLookupTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CardImageUrlTests(unittest.TestCase):
+    def test_image_url_helpers_build_api_urls(self) -> None:
+        from app.services.card_common import _placeholder_url, _remote_image_url
+
+        self.assertEqual(_placeholder_url(7, "Dark"), "/api/assets/placeholder?item_id=7&label=Dark")
+        self.assertTrue(
+            (_remote_image_url({"card_images": [{"image_url_small": "https://img/x.jpg"}]}) or "").startswith("/api/assets/proxy?url=")
+        )

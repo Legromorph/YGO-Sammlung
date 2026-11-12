@@ -24,6 +24,7 @@ from app.integrations.price_values import parse_positive_price
 from app.models import Card, CardPrint, CardSet, SourceMapping
 from app.schemas import (
     CardLookupPrintOption,
+    CardPayload,
     CardLookupResponse,
     CardLookupSuggestion,
 )

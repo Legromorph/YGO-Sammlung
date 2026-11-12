@@ -14,6 +14,7 @@ from app.integrations.cardmarket_links import (
     CARDMARKET_MATCH_FAILED,
     CARDMARKET_MATCH_MANUAL,
     CARDMARKET_MATCH_SET_NAME,
+    build_cardmarket_product_url,
     normalize_cardmarket_product_url,
     resolve_cardmarket_product_url,
 )
